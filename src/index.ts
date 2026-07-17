@@ -20,10 +20,12 @@ const PTV_BASE = "https://timetableapi.ptv.vic.gov.au";
 const CACHE_SECONDS = 45; // protect PTV rate limits; clients can poll freely
 
 // ---- Your stops -----------------------------------------------------------
+// maxResults must be >= the client's maxShown PLUS a buffer, because the
+// client hides departures inside your walk time and already-departed ones.
 const STOPS = [
-  { key: "train", label: "Footscray Station", stopId: 1072, routeType: 0 },
-  { key: "bus-city", label: "Bus - City / Inner North", stopId: 19740, routeType: 2 },
-  { key: "bus-west", label: "Bus - Footscray / Sunshine", stopId: 20796, routeType: 2 },
+  { key: "train", label: "Footscray Station", stopId: 1072, routeType: 0, maxResults: 12 },
+  { key: "bus-city", label: "Bus - City / Inner North", stopId: 19740, routeType: 2, maxResults: 5 },
+  { key: "bus-west", label: "Bus - Footscray / Sunshine", stopId: 20796, routeType: 2, maxResults: 5 },
 ] as const;
 
 // ---- PTV request signing (HMAC-SHA1, uppercase hex) -----------------------
@@ -76,7 +78,7 @@ async function fetchStop(
 ): Promise<StopBoard> {
   const path =
     `/v3/departures/route_type/${stop.routeType}/stop/${stop.stopId}` +
-    `?max_results=2&expand=stop&expand=route&expand=direction`;
+    `?max_results=${stop.maxResults}&expand=stop&expand=route&expand=direction`;
 
   try {
     const res = await fetch(await signedUrl(path, env));
@@ -101,6 +103,13 @@ async function fetchStop(
         scheduledUtc: dep.scheduled_departure_utc,
         estimatedUtc: dep.estimated_departure_utc ?? null,
       };
+    });
+
+    // PTV can return departures out of order across routes; sort by best time
+    departures.sort((a, b) => {
+      const ta = new Date(a.estimatedUtc ?? a.scheduledUtc).getTime();
+      const tb = new Date(b.estimatedUtc ?? b.scheduledUtc).getTime();
+      return ta - tb;
     });
 
     return {
@@ -135,7 +144,7 @@ export default {
     }
 
     if (url.pathname === "/api/board") {
-      // Edge cache so many refreshes = one PTV call per ~40s
+      // Edge cache so many refreshes = one PTV call per ~45s
       const cacheKey = new Request(`${url.origin}/api/board`);
       const cache = caches.default;
 
