@@ -2,11 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <title>Footscray Departures</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=Barlow+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet" />
 <style>
   :root {
     --board: #000000;        /* night board */
@@ -18,7 +20,7 @@
     --train: #2a6fb8;        /* metro-ish blue */
     --bus: #e07020;          /* bus orange */
     --rule: #2a2a2a;
-    --accent: #ffffff; 
+    --accent: #ffffff;
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
@@ -27,7 +29,11 @@
     color: var(--ink);
     font-family: "Barlow Semi Condensed", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
-    padding: clamp(12px, 3vw, 28px);
+    /* keep content clear of iPhone notch / home indicator */
+    padding: max(clamp(12px, 3vw, 28px), env(safe-area-inset-top))
+             max(clamp(12px, 3vw, 28px), env(safe-area-inset-right))
+             max(clamp(12px, 3vw, 28px), env(safe-area-inset-bottom))
+             max(clamp(12px, 3vw, 28px), env(safe-area-inset-left));
     display: flex;
     flex-direction: column;
     gap: clamp(12px, 2.5vw, 22px);
@@ -68,6 +74,15 @@
   }
   @media (prefers-reduced-motion: reduce) {
     #dot { animation: none; }
+  }
+
+  /* Board: stacked by default (portrait phone, desktop) */
+  #board {
+    display: flex;
+    flex-direction: column;
+    gap: clamp(12px, 2.5vw, 22px);
+    flex: 1;
+    min-height: 0;
   }
 
   /* Stop sections */
@@ -152,6 +167,34 @@
     font-size: clamp(13px, 3.6vw, 15px);
   }
   .error { color: #d98380; }
+
+  /* ---- Landscape phone / small tablet: trains left, buses right ---- */
+  @media (orientation: landscape) and (max-width: 1024px) and (max-height: 600px) {
+    body { gap: 10px; }
+    #clock { font-size: 24px; }
+    #board {
+      display: grid;
+      grid-template-columns: 1.15fr 1fr;
+      grid-template-rows: 1fr 1fr;
+      grid-template-areas:
+        "train bus-city"
+        "train bus-west";
+      gap: 10px;
+    }
+    section { min-height: 0; }              /* let grid constrain height */
+    section[data-key="train"]    { grid-area: train; }
+    section[data-key="bus-city"] { grid-area: bus-city; }
+    section[data-key="bus-west"] { grid-area: bus-west; }
+
+    /* compact density so more rows fit */
+    section h2 { font-size: 12px; padding: 6px 10px 5px; }
+    .row { padding: 5px 10px; gap: 8px; }
+    .badge { font-size: 12px; padding: 2px 6px; }
+    .dest .name { font-size: 15px; }
+    .dest .meta { font-size: 10px; }
+    .mins { font-size: 22px; }
+    .mins small { font-size: 9px; }
+  }
 </style>
 </head>
 <body>
@@ -164,6 +207,46 @@
 <script>
 const REFRESH_MS = 45_000;
 const TZ = "Australia/Melbourne";
+
+// Display rules per stop.
+// hideWithinMin: hide departures leaving sooner than this (your walk time).
+// maxShown: cap rows per stop. Note: worker must fetch at least this many.
+const RULES = {
+  "train":    { hideWithinMin: 5, maxShown: 10 },
+  "bus-city": { hideWithinMin: 0, maxShown: 4 },
+  "bus-west": { hideWithinMin: 0, maxShown: 4 },
+};
+// Official Melbourne line colours (via Wikipedia / PTV)
+// fg chosen for contrast: light backgrounds get dark text
+const LINE_COLORS = {
+  "Alamein":      { bg: "#152C6B", fg: "#ffffff" },
+  "Belgrave":     { bg: "#152C6B", fg: "#ffffff" },
+  "Craigieburn":  { bg: "#FFBE00", fg: "#111111" },
+  "Cranbourne":   { bg: "#279FD5", fg: "#ffffff" },
+  "Flemington":   { bg: "#95979A", fg: "#111111" },
+  "Frankston":    { bg: "#028430", fg: "#ffffff" },
+  "Glen Waverley":{ bg: "#152C6B", fg: "#ffffff" },
+  "Hurstbridge":  { bg: "#BE1014", fg: "#ffffff" },
+  "Lilydale":     { bg: "#152C6B", fg: "#ffffff" },
+  "Mernda":       { bg: "#BE1014", fg: "#ffffff" },
+  "Pakenham":     { bg: "#279FD5", fg: "#ffffff" },
+  "Sandringham":  { bg: "#F178AF", fg: "#111111" },
+  "Stony Point":  { bg: "#028430", fg: "#ffffff" },
+  "Sunbury":      { bg: "#279FD5", fg: "#ffffff" },
+  "Upfield":      { bg: "#FFBE00", fg: "#111111" },
+  "Werribee":     { bg: "#F178AF", fg: "#111111" },
+  "Williamstown": { bg: "#F178AF", fg: "#111111" },
+};
+
+function lineColor(routeName) {
+  const name = (routeName || "").toLowerCase();
+  for (const [line, c] of Object.entries(LINE_COLORS)) {
+    if (name.includes(line.toLowerCase())) return c;
+  }
+  return null; // unknown line -> fall back to generic .badge.train blue
+}
+const DEFAULT_RULE = { hideWithinMin: 0, maxShown: 4 };
+
 let lastPayload = null;
 
 function melbTime(date) {
@@ -188,7 +271,10 @@ function render() {
   board.innerHTML = "";
 
   for (const stop of lastPayload.stops) {
+    const rule = RULES[stop.key] ?? DEFAULT_RULE;
+
     const section = document.createElement("section");
+    section.dataset.key = stop.key; // used by landscape grid areas
     const h2 = document.createElement("h2");
     h2.textContent = stop.label;
     section.appendChild(h2);
@@ -198,16 +284,13 @@ function render() {
       div.className = "error";
       div.textContent = "Data unavailable. " + stop.error;
       section.appendChild(div);
-    } else if (stop.departures.length === 0) {
-      const div = document.createElement("div");
-      div.className = "empty";
-      div.textContent = "No departures in the next while.";
-      section.appendChild(div);
     } else {
+      let shown = 0;
       for (const dep of stop.departures) {
+        if (shown >= rule.maxShown) break;
         const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
         const mins = minutesUntil(bestIso);
-        if (mins < -1) continue; // already gone
+        if (mins < rule.hideWithinMin) continue; // gone, or too soon to catch
 
         const row = document.createElement("div");
         row.className = "row";
@@ -215,6 +298,13 @@ function render() {
         const badge = document.createElement("span");
         badge.className = "badge " + (stop.key === "train" ? "train" : "bus");
         badge.textContent = dep.route;
+        if (stop.key === "train") {
+          const c = lineColor(dep.route);
+          if (c) {
+            badge.style.background = c.bg;
+            badge.style.color = c.fg;
+          }
+        }
 
         const dest = document.createElement("div");
         dest.className = "dest";
@@ -231,12 +321,19 @@ function render() {
         dest.append(name, meta);
 
         const minsEl = document.createElement("div");
-        minsEl.className = "mins" + (mins <= 1 ? " now" : "");
-        minsEl.innerHTML = (mins <= 0 ? "Now" : mins) +
-          "<small>" + (mins <= 0 ? "departing" : "min") + "</small>";
+        minsEl.className = "mins" + (mins <= rule.hideWithinMin + 1 ? " now" : "");
+        minsEl.innerHTML = mins +
+          "<small>min</small>";
 
         row.append(badge, dest, minsEl);
         section.appendChild(row);
+        shown++;
+      }
+      if (shown === 0) {
+        const div = document.createElement("div");
+        div.className = "empty";
+        div.textContent = "No catchable departures right now.";
+        section.appendChild(div);
       }
     }
     board.appendChild(section);
@@ -263,6 +360,20 @@ refresh();
 setInterval(refresh, REFRESH_MS);
 // Re-render countdowns every 20s between fetches so minutes stay honest
 setInterval(render, 20_000);
+
+// ---- Keep the screen awake on supported browsers (iOS 16.4+) ----
+let wakeLock = null;
+async function requestWakeLock() {
+  try {
+    if ("wakeLock" in navigator) {
+      wakeLock = await navigator.wakeLock.request("screen");
+    }
+  } catch (err) { /* not critical; fall back to OS auto-lock settings */ }
+}
+requestWakeLock();
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") requestWakeLock();
+});
 </script>
 </body>
 </html>
