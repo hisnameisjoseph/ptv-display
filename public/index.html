@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+<title>Footscray Departures</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --board: #000000;        /* night board */
+    --panel: #111111;
+    --ink: #f5f5f5;          /* off-white text */
+    --dim: #a7a7a7;          /* slate labels */
+    --amber: #ffb300;        /* PIDS countdown amber */
+    --live: #37c978;         /* realtime green */
+    --train: #2a6fb8;        /* metro-ish blue */
+    --bus: #e07020;          /* bus orange */
+    --rule: #2a2a2a;
+    --accent: #ffffff; 
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: var(--board);
+    color: var(--ink);
+    font-family: "Barlow Semi Condensed", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: clamp(12px, 3vw, 28px);
+    display: flex;
+    flex-direction: column;
+    gap: clamp(12px, 2.5vw, 22px);
+  }
+
+  /* Header: clock + freshness */
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  #clock {
+    font-family: "Archivo", sans-serif;
+    font-weight: 600;
+    font-size: clamp(28px, 8vw, 44px);
+    letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  #freshness {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--dim);
+    font-size: clamp(12px, 3.2vw, 15px);
+    font-weight: 500;
+  }
+  #dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--live);
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+  #dot.stale { background: var(--amber); animation: none; }
+  #dot.down { background: #d9534f; animation: none; }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #dot { animation: none; }
+  }
+
+  /* Stop sections */
+  section {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  section h2 {
+    font-size: clamp(14px, 3.8vw, 18px);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--dim);
+    padding: 10px 14px 8px;
+    border-bottom: 1px solid var(--rule);
+  }
+  .row {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+  }
+  .row + .row { border-top: 1px solid var(--rule); }
+
+  .badge {
+    font-family: "Archivo", sans-serif;
+    font-weight: 600;
+    font-size: clamp(13px, 3.6vw, 16px);
+    padding: 3px 8px;
+    border-radius: 5px;
+    color: #fff;
+    min-width: 2.6em;
+    text-align: center;
+  }
+  .badge.train { background: var(--train); }
+  .badge.bus { background: var(--bus); }
+
+  .dest {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .dest .name {
+    font-weight: 600;
+    font-size: clamp(16px, 4.6vw, 21px);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .dest .meta {
+    color: var(--dim);
+    font-size: clamp(11px, 3vw, 13px);
+    font-weight: 500;
+  }
+
+  .mins {
+    font-family: "Archivo", sans-serif;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    font-size: clamp(24px, 7.5vw, 36px);
+    color: var(--amber);
+    text-align: right;
+    line-height: 1;
+  }
+  .mins small {
+    display: block;
+    font-family: "Barlow Semi Condensed", sans-serif;
+    font-size: clamp(10px, 2.6vw, 12px);
+    color: var(--dim);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-top: 2px;
+  }
+  .mins.now { color: var(--live); }
+
+  .empty, .error {
+    padding: 14px;
+    color: var(--dim);
+    font-size: clamp(13px, 3.6vw, 15px);
+  }
+  .error { color: #d98380; }
+</style>
+</head>
+<body>
+  <header>
+    <div id="clock">--:--</div>
+    <div id="freshness"><span id="dot"></span><span id="updated">connecting</span></div>
+  </header>
+  <main id="board"></main>
+
+<script>
+const REFRESH_MS = 45_000;
+const TZ = "Australia/Melbourne";
+let lastPayload = null;
+
+function melbTime(date) {
+  return new Intl.DateTimeFormat("en-AU", {
+    timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(date);
+}
+
+function tickClock() {
+  document.getElementById("clock").textContent = melbTime(new Date());
+}
+setInterval(tickClock, 1000);
+tickClock();
+
+function minutesUntil(iso) {
+  return Math.round((new Date(iso) - Date.now()) / 60000);
+}
+
+function render() {
+  if (!lastPayload) return;
+  const board = document.getElementById("board");
+  board.innerHTML = "";
+
+  for (const stop of lastPayload.stops) {
+    const section = document.createElement("section");
+    const h2 = document.createElement("h2");
+    h2.textContent = stop.label;
+    section.appendChild(h2);
+
+    if (stop.error) {
+      const div = document.createElement("div");
+      div.className = "error";
+      div.textContent = "Data unavailable. " + stop.error;
+      section.appendChild(div);
+    } else if (stop.departures.length === 0) {
+      const div = document.createElement("div");
+      div.className = "empty";
+      div.textContent = "No departures in the next while.";
+      section.appendChild(div);
+    } else {
+      for (const dep of stop.departures) {
+        const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
+        const mins = minutesUntil(bestIso);
+        if (mins < -1) continue; // already gone
+
+        const row = document.createElement("div");
+        row.className = "row";
+
+        const badge = document.createElement("span");
+        badge.className = "badge " + (stop.key === "train" ? "train" : "bus");
+        badge.textContent = dep.route;
+
+        const dest = document.createElement("div");
+        dest.className = "dest";
+        const name = document.createElement("span");
+        name.className = "name";
+        name.textContent = dep.destination;
+        const meta = document.createElement("span");
+        meta.className = "meta";
+        const bits = [];
+        if (dep.platform) bits.push("Platform " + dep.platform);
+        bits.push(dep.estimatedUtc ? "Live" : "Scheduled");
+        bits.push(melbTime(new Date(bestIso)));
+        meta.textContent = bits.join(" \u00b7 ");
+        dest.append(name, meta);
+
+        const minsEl = document.createElement("div");
+        minsEl.className = "mins" + (mins <= 1 ? " now" : "");
+        minsEl.innerHTML = (mins <= 0 ? "Now" : mins) +
+          "<small>" + (mins <= 0 ? "departing" : "min") + "</small>";
+
+        row.append(badge, dest, minsEl);
+        section.appendChild(row);
+      }
+    }
+    board.appendChild(section);
+  }
+}
+
+async function refresh() {
+  const dot = document.getElementById("dot");
+  const updated = document.getElementById("updated");
+  try {
+    const res = await fetch("/api/board");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    lastPayload = await res.json();
+    dot.className = "";
+    updated.textContent = "Updated " + melbTime(new Date());
+  } catch (err) {
+    dot.className = "down";
+    updated.textContent = "connection lost";
+  }
+  render();
+}
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+// Re-render countdowns every 20s between fetches so minutes stay honest
+setInterval(render, 20_000);
+</script>
+</body>
+</html>

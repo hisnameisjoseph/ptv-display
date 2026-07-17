@@ -1,0 +1,3 @@
+# Copy to .dev.vars for local development (never commit .dev.vars)
+PTV_DEV_ID=your-numeric-dev-id
+PTV_API_KEY=your-signing-key
