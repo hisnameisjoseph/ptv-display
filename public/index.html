@@ -107,8 +107,9 @@
     align-items: center;
     gap: 12px;
     padding: 10px 14px;
+    border-bottom: 1px solid var(--rule);
   }
-  .row + .row { border-top: 1px solid var(--rule); }
+  .rows > .row:last-child { border-bottom: none; }
 
   .badge {
     font-family: "Archivo", sans-serif;
@@ -171,10 +172,11 @@
   /* ---- Landscape phone / small tablet: trains left, buses right ---- */
   @media (orientation: landscape) and (max-width: 1024px) and (max-height: 600px) {
     body { gap: 10px; }
-    #clock { font-size: 24px; }
+    #clock { font-size: 16px; }
+    #freshness { font-size: 11px; }
     #board {
       display: grid;
-      grid-template-columns: 1.15fr 1fr;
+      grid-template-columns: 1.5fr 1fr;
       grid-template-rows: 1fr 1fr;
       grid-template-areas:
         "train bus-city"
@@ -194,6 +196,15 @@
     .dest .meta { font-size: 10px; }
     .mins { font-size: 22px; }
     .mins small { font-size: 9px; }
+
+    /* trains flow into two columns */
+    section[data-key="train"] .rows {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
+    section[data-key="train"] .row:nth-child(odd) {
+      border-right: 1px solid var(--rule);
+    }
   }
 </style>
 </head>
@@ -212,7 +223,7 @@ const TZ = "Australia/Melbourne";
 // hideWithinMin: hide departures leaving sooner than this (your walk time).
 // maxShown: cap rows per stop. Note: worker must fetch at least this many.
 const RULES = {
-  "train":    { hideWithinMin: 5, maxShown: 10 },
+  "train":    { hideWithinMin: 5, maxShown: 18 },
   "bus-city": { hideWithinMin: 0, maxShown: 4 },
   "bus-west": { hideWithinMin: 0, maxShown: 4 },
 };
@@ -278,12 +289,15 @@ function render() {
     const h2 = document.createElement("h2");
     h2.textContent = stop.label;
     section.appendChild(h2);
+    const rowsWrap = document.createElement("div");
+    rowsWrap.className = "rows";
+    section.appendChild(rowsWrap);
 
     if (stop.error) {
       const div = document.createElement("div");
       div.className = "error";
       div.textContent = "Data unavailable. " + stop.error;
-      section.appendChild(div);
+      rowsWrap.appendChild(div);
     } else {
       let shown = 0;
       for (const dep of stop.departures) {
@@ -326,14 +340,14 @@ function render() {
           "<small>min</small>";
 
         row.append(badge, dest, minsEl);
-        section.appendChild(row);
+        rowsWrap.appendChild(row);
         shown++;
       }
       if (shown === 0) {
         const div = document.createElement("div");
         div.className = "empty";
         div.textContent = "No catchable departures right now.";
-        section.appendChild(div);
+        rowsWrap.appendChild(div);
       }
     }
     board.appendChild(section);
