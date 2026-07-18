@@ -23,9 +23,9 @@ const CACHE_SECONDS = 45; // protect PTV rate limits; clients can poll freely
 // maxResults must be >= the client's maxShown PLUS a buffer, because the
 // client hides departures inside your walk time and already-departed ones.
 const STOPS = [
-  { key: "train", label: "Footscray Station", stopId: 1072, routeType: 0, maxResults: 12 },
-  { key: "bus-city", label: "Bus - City / Inner North", stopId: 19740, routeType: 2, maxResults: 5 },
-  { key: "bus-west", label: "Bus - Footscray / Sunshine", stopId: 20796, routeType: 2, maxResults: 5 },
+  { key: "train", label: "Footscray Station", stopId: 1072, routeType: 0, maxResults: 40 },
+  { key: "bus-city", label: "Bus - City / Inner North", stopId: 19740, routeType: 2, maxResults: 10 },
+  { key: "bus-west", label: "Bus - Footscray / Sunshine", stopId: 20796, routeType: 2, maxResults: 10 },
 ] as const;
 
 // ---- PTV request signing (HMAC-SHA1, uppercase hex) -----------------------
