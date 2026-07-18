@@ -176,7 +176,7 @@
     #freshness { font-size: 11px; }
     #board {
       display: grid;
-      grid-template-columns: 1.7fr 1fr;
+      grid-template-columns: 1.75fr 1fr;
       grid-template-rows: 1fr 1fr;
       grid-template-areas:
         "train bus-city"
@@ -192,9 +192,9 @@
     section h2 { font-size: 12px; padding: 6px 10px 5px; }
     .row { padding: 5px 10px; gap: 8px; }
     .badge { font-size: 12px; padding: 2px 6px; }
-    .dest .name { font-size: 15px; }
-    .dest .meta { font-size: 9px; }
-    .mins { font-size: 18px; }
+    .dest .name { font-size: 18px; }
+    .dest .meta { font-size: 10px; }
+    .mins { font-size: 21px; }
     .mins small { font-size: 7px; }
 
     /* trains flow into two columns */
@@ -221,11 +221,13 @@ const TZ = "Australia/Melbourne";
 
 // Display rules per stop.
 // hideWithinMin: hide departures leaving sooner than this (your walk time).
-// maxShown: cap rows per stop. Note: worker must fetch at least this many.
+// maxShown: row cap in stacked (portrait) layout, where sections grow freely.
+// maxFill: generous cap in the grid layout, where available height decides
+//          the real count (overflowing rows are trimmed after render).
 const RULES = {
-  "train":    { hideWithinMin: 5, maxShown: 18 },
-  "bus-city": { hideWithinMin: 0, maxShown: 4 },
-  "bus-west": { hideWithinMin: 0, maxShown: 4 },
+  "train":    { hideWithinMin: 5, maxShown: 15, maxFill: 30 },
+  "bus-city": { hideWithinMin: 0, maxShown: 8,  maxFill: 12 },
+  "bus-west": { hideWithinMin: 0, maxShown: 8,  maxFill: 12 },
 };
 // Official Melbourne line colours (via Wikipedia / PTV)
 // fg chosen for contrast: light backgrounds get dark text
@@ -256,7 +258,7 @@ function lineColor(routeName) {
   }
   return null; // unknown line -> fall back to generic .badge.train blue
 }
-const DEFAULT_RULE = { hideWithinMin: 0, maxShown: 4 };
+const DEFAULT_RULE = { hideWithinMin: 0, maxShown: 4, maxFill: 12 };
 
 let lastPayload = null;
 
@@ -276,13 +278,35 @@ function minutesUntil(iso) {
   return Math.round((new Date(iso) - Date.now()) / 60000);
 }
 
+// Remove trailing rows that don't fully fit inside their height-constrained
+// section. Only has an effect in the grid layout, where sections have a fixed
+// height; in the stacked layout sections grow to fit and nothing overflows.
+function trimOverflow() {
+  document.querySelectorAll("#board section").forEach((section) => {
+    const rows = section.querySelector(".rows");
+    if (!rows) return;
+    let guard = 60; // safety: never loop forever
+    while (
+      guard-- > 0 &&
+      rows.lastElementChild &&
+      section.scrollHeight > section.clientHeight
+    ) {
+      rows.lastElementChild.remove();
+    }
+  });
+}
+
 function render() {
   if (!lastPayload) return;
   const board = document.getElementById("board");
   board.innerHTML = "";
 
+  // In the grid layout, height decides the row count, so use the generous cap.
+  const isGrid = getComputedStyle(board).display === "grid";
+
   for (const stop of lastPayload.stops) {
     const rule = RULES[stop.key] ?? DEFAULT_RULE;
+    const cap = isGrid ? rule.maxFill : rule.maxShown;
 
     const section = document.createElement("section");
     section.dataset.key = stop.key; // used by landscape grid areas
@@ -301,7 +325,7 @@ function render() {
     } else {
       let shown = 0;
       for (const dep of stop.departures) {
-        if (shown >= rule.maxShown) break;
+        if (shown >= cap) break;
         const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
         const mins = minutesUntil(bestIso);
         if (mins < rule.hideWithinMin) continue; // gone, or too soon to catch
@@ -311,7 +335,7 @@ function render() {
 
         const badge = document.createElement("span");
         badge.className = "badge " + (stop.key === "train" ? "train" : "bus");
-        badge.textContent = dep.route;
+        badge.textContent = stop.key === "train" ? dep.route.charAt(0) : dep.route;
         if (stop.key === "train") {
           const c = lineColor(dep.route);
           if (c) {
@@ -352,6 +376,8 @@ function render() {
     }
     board.appendChild(section);
   }
+
+  trimOverflow();
 }
 
 async function refresh() {
@@ -374,6 +400,13 @@ refresh();
 setInterval(refresh, REFRESH_MS);
 // Re-render countdowns every 20s between fetches so minutes stay honest
 setInterval(render, 20_000);
+
+// Re-fit rows when the window size or orientation changes
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(render, 200);
+});
 
 // ---- Keep the screen awake on supported browsers (iOS 16.4+) ----
 let wakeLock = null;
