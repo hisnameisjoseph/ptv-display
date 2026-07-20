@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<title>Footscray Departures</title>
+<title>Melbourne Departures</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=Barlow+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet" />
@@ -39,7 +39,7 @@
     gap: clamp(12px, 2.5vw, 22px);
   }
 
-  /* Header: clock + freshness */
+  /* Header: clock + walk filter + freshness */
   header {
     display: flex;
     align-items: baseline;
@@ -53,6 +53,23 @@
     letter-spacing: 0.02em;
     font-variant-numeric: tabular-nums;
   }
+  #header-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  #walk-toggle {
+    background: #1a1a1a;
+    border: 1px solid var(--rule);
+    color: var(--dim);
+    border-radius: 6px;
+    padding: 4px 10px;
+    font: inherit;
+    font-size: clamp(11px, 3vw, 13px);
+    font-weight: 500;
+    cursor: pointer;
+  }
+  #walk-toggle.on { color: var(--live); border-color: #2c4a38; }
   #freshness {
     display: flex;
     align-items: center;
@@ -87,6 +104,7 @@
 
   /* Stop sections */
   section {
+    position: relative; /* anchors the station menu */
     background: var(--panel);
     border: 1px solid var(--rule);
     border-radius: 10px;
@@ -101,6 +119,47 @@
     padding: 10px 14px 8px;
     border-bottom: 1px solid var(--rule);
   }
+  h2.picker {
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  h2.picker .caret { color: var(--dim); font-size: 0.85em; }
+  h2.picker:hover { color: var(--ink); }
+
+  .station-menu {
+    position: absolute;
+    top: 38px;
+    left: 10px;
+    z-index: 50;
+    background: #1a1a1a;
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    min-width: 250px;
+    max-height: min(60vh, 340px);
+    overflow-y: auto;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.65);
+  }
+  .station-menu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    padding: 9px 14px;
+    background: none;
+    border: none;
+    border-bottom: 1px solid #222;
+    color: var(--ink);
+    font: inherit;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .station-menu button:last-child { border-bottom: none; }
+  .station-menu button:hover { background: #262626; }
+  .station-menu button.active { color: var(--amber); }
+
   .row {
     display: grid;
     grid-template-columns: auto 1fr auto;
@@ -192,6 +251,7 @@
     body { gap: 10px; }
     #clock { font-size: 16px; }
     #freshness { font-size: 11px; }
+    #walk-toggle { font-size: 10px; padding: 2px 8px; }
     #board {
       display: grid;
       grid-template-columns: 1.75fr 1fr;
@@ -208,6 +268,7 @@
 
     /* compact density so more rows fit */
     section h2 { font-size: 12px; padding: 6px 10px 5px; }
+    .station-menu { top: 30px; }
     .row { padding: 5px 10px; gap: 8px; }
     .badge { font-size: 12px; padding: 2px 6px; }
     .dest .name { font-size: 18px; }
@@ -221,24 +282,134 @@
 <body>
   <header>
     <div id="clock">--:--</div>
-    <div id="freshness"><span id="dot"></span><span id="updated">connecting</span></div>
+    <div id="header-right">
+      <button id="walk-toggle" type="button">Walk filter</button>
+      <div id="freshness"><span id="dot"></span><span id="updated">connecting</span></div>
+    </div>
   </header>
   <main id="board"></main>
 
 <script>
 const REFRESH_MS = 45_000;
 const TZ = "Australia/Melbourne";
+const WALK_MINUTES = 5;
+
+// ---- Station registry (keys must match the Worker) ------------------------
+// split: null -> single chronological list.
+// split: { left: {label, test?, field?}, right: {label, test?, field?} }
+//   Exactly one side carries a regex test; the other side is the fallback.
+//   field: "destination" (default) or "route" - which value the regex tests.
+//   Route-based groups are stable all day; destination-based splits are used
+//   at suburban stations where "City ..." reliably marks the citybound side.
+
+// Suburban stations: citybound trains' direction says "City (...)".
+const CITY_SPLIT = {
+  left:  { label: "Outbound" },
+  right: { label: "To City", test: /city|flinders/i },
+};
+
+// Metro Tunnel stations: through-running, so split by which end of the
+// tunnel the train is heading to.
+const TUNNEL_SPLIT_NORTH = {
+  left:  { label: "To Sunbury", test: /sunbury/i },
+  right: { label: "To City / Cranbourne / Pakenham", test: /city|cranbourne|pakenham/i },
+};
+const TUNNEL_SPLIT_SOUTH = {
+  left:  { label: "To City / Sunbury", test: /sunbury|city/i },
+  right: { label: "To Cranbourne / Pakenham", test: /cranbourne|pakenham/i},
+};
+
+// Southern Cross: cross-city (Werribee / Williamstown) vs everything else.
+const SX_SPLIT = {
+  left:  { label: "Red / Yellow / Dark Blue" },
+  right: { label: "Cross-City / Fankston", test: /sandringham|frankston|werribee|williamstown/i, field: "route" },
+};
+
+// Flinders St + Town Hall: loop lines vs cross-city + Metro Tunnel lines.
+const FLINDERS_SPLIT = {
+  left:  { label: "Red / Yellow / Dark Blue" },
+  right: {
+    label: "Cross-City / Fankston",
+    test: /werribee|williamstown|sandringham|sunbury|pakenham|cranbourne|frankston/i,
+    field: "route",
+  },
+};
+
+// Melbourne Central + State Library: loop lines vs Metro Tunnel lines.
+const MC_SPLIT = {
+  left:  { label: "Red / Yellow / Dark Blue" },
+  right: { label: "Metro Tunnel & Frankston", test: /sunbury|pakenham|cranbourne|frankston/i, field: "route" },
+};
+
+// Flagstaff / Parliament: platform-side groups expressed as line groups.
+const NORTH_LOOP_SPLIT = {
+  left:  { label: "Burnley / Craigieburn / Upfield"},
+  right: { label: "Hurstbridge / Mernda / Frankston", test: /hurstbridge|mernda|frankston/i, field: "route" },
+};
+
+const STATIONS = {
+  "footscray":         { label: "Footscray Station",                 split: CITY_SPLIT },
+  "flinders-street":   { label: "Flinders St / Town Hall",           split: FLINDERS_SPLIT },
+  "melbourne-central": { label: "Melbourne Central / State Library", split: MC_SPLIT },
+  "southern-cross":    { label: "Southern Cross Station",            split: SX_SPLIT },
+  "flagstaff":         { label: "Flagstaff Station",                 split: NORTH_LOOP_SPLIT },
+  "parliament":        { label: "Parliament Station",                split: NORTH_LOOP_SPLIT },
+  "anzac":             { label: "Anzac Station",                     split: TUNNEL_SPLIT_SOUTH },
+  "parkville":         { label: "Parkville Station",                 split: TUNNEL_SPLIT_NORTH },
+  "arden":             { label: "Arden Station",                     split: TUNNEL_SPLIT_NORTH },
+  "richmond":          { label: "Richmond Station",                  split: CITY_SPLIT },
+  "west-richmond":     { label: "West Richmond Station",             split: CITY_SPLIT },
+  "jolimont":          { label: "Jolimont-MCG Station",              split: CITY_SPLIT },
+  "south-yarra":       { label: "South Yarra Station",               split: CITY_SPLIT },
+  "caulfield":         { label: "Caulfield Station",                 split: CITY_SPLIT },
+  "newport":           { label: "Newport Station",                   split: CITY_SPLIT },
+  "yarraville":        { label: "Yarraville Station",                split: CITY_SPLIT },
+  "sunshine":          { label: "Sunshine Station",                  split: CITY_SPLIT },
+  "werribee":          { label: "Werribee Station",                  split: CITY_SPLIT },
+  "middle-footscray":  { label: "Middle Footscray",                  split: CITY_SPLIT },
+  "west-footscray":    { label: "West Footscray",                    split: CITY_SPLIT },
+  "north-richmond":    { label: "North Richmond",                    split: CITY_SPLIT },
+  "hawksburn":         { label: "Hawksburne Station",                split: CITY_SPLIT },
+  "watergardens":      { label: "Watergardens Station",              split: CITY_SPLIT },
+  "flemington-bridge": { label: "Flemington Bridge",                 split: CITY_SPLIT },
+  "macaulay":          { label: "Macaulay Station",                  split: CITY_SPLIT },
+
+
+};
+const DEFAULT_STATION = "footscray";
+
+// ---- Persisted per-device settings ----------------------------------------
+function loadSetting(key, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : v;
+  } catch { return fallback; }
+}
+function saveSetting(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* private mode etc. */ }
+}
+
+let currentStation = loadSetting("ptv-station", DEFAULT_STATION);
+if (!(currentStation in STATIONS)) currentStation = DEFAULT_STATION;
+let walkFilterOn = loadSetting("ptv-walk-filter", "on") === "on";
+let menuOpen = false;
 
 // Display rules per stop.
-// hideWithinMin: hide departures leaving sooner than this (your walk time).
 // maxShown: row cap in stacked (portrait) layout, where sections grow freely.
 // maxFill: generous cap in the grid layout, where available height decides
 //          the real count (overflowing rows are trimmed after render).
 const RULES = {
-  "train":    { hideWithinMin: 5, maxShown: 15, maxFill: 30 },
-  "bus-city": { hideWithinMin: 0, maxShown: 8,  maxFill: 12 },
-  "bus-west": { hideWithinMin: 0, maxShown: 8,  maxFill: 12 },
+  "train":    { maxShown: 15, maxFill: 30 },
+  "bus-city": { maxShown: 8,  maxFill: 12 },
+  "bus-west": { maxShown: 8,  maxFill: 12 },
 };
+const DEFAULT_RULE = { maxShown: 4, maxFill: 12 };
+
+// The walk filter only applies to trains (your walk to the station).
+function hideWithinFor(stopKey) {
+  return stopKey === "train" && walkFilterOn ? WALK_MINUTES : 0;
+}
+
 // Official Melbourne line colours (via Wikipedia / PTV)
 // fg chosen for contrast: light backgrounds get dark text
 const LINE_COLORS = {
@@ -268,12 +439,6 @@ function lineColor(routeName) {
   }
   return null; // unknown line -> fall back to generic .badge.train blue
 }
-const DEFAULT_RULE = { hideWithinMin: 0, maxShown: 4, maxFill: 12 };
-
-// Citybound = direction name mentions the city loop / Flinders Street
-function isCitybound(destination) {
-  return /city|flinders/i.test(destination || "");
-}
 
 let lastPayload = null;
 
@@ -293,18 +458,30 @@ function minutesUntil(iso) {
   return Math.round((new Date(iso) - Date.now()) / 60000);
 }
 
+// Decide which column a departure belongs to for a given split config.
+// The side carrying a regex wins/loses on its match; the other side is
+// the fallback for everything else.
+function pickColumn(split, dep) {
+  const valueFor = (side) =>
+    (side.field === "route" ? dep.route : dep.destination) || "";
+  if (split.left.test) return split.left.test.test(valueFor(split.left)) ? "left" : "right";
+  if (split.right.test) return split.right.test.test(valueFor(split.right)) ? "right" : "left";
+  return "left";
+}
+
 // Build one departure row element
-function buildRow(stop, dep, rule) {
+function buildRow(stopKey, dep) {
   const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
   const mins = minutesUntil(bestIso);
+  const hideWithin = hideWithinFor(stopKey);
 
   const row = document.createElement("div");
   row.className = "row";
 
   const badge = document.createElement("span");
-  badge.className = "badge " + (stop.key === "train" ? "train" : "bus");
-  badge.textContent = stop.key === "train" ? dep.route.charAt(0) : dep.route;
-  if (stop.key === "train") {
+  badge.className = "badge " + (stopKey === "train" ? "train" : "bus");
+  badge.textContent = stopKey === "train" ? dep.route.charAt(0) : dep.route;
+  if (stopKey === "train") {
     const c = lineColor(dep.route);
     if (c) {
       badge.style.background = c.bg;
@@ -327,7 +504,7 @@ function buildRow(stop, dep, rule) {
   dest.append(name, meta);
 
   const minsEl = document.createElement("div");
-  minsEl.className = "mins" + (mins <= rule.hideWithinMin + 1 ? " now" : "");
+  minsEl.className = "mins" + (mins <= hideWithin + 1 ? " now" : "");
   minsEl.innerHTML = mins + "<small>min</small>";
 
   row.append(badge, dest, minsEl);
@@ -363,6 +540,40 @@ function trimOverflow() {
   });
 }
 
+// ---- Station picker menu ---------------------------------------------------
+function buildStationMenu(section) {
+  const menu = document.createElement("div");
+  menu.className = "station-menu";
+  for (const [key, cfg] of Object.entries(STATIONS)) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = cfg.label;
+    if (key === currentStation) btn.classList.add("active");
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      menuOpen = false;
+      if (key !== currentStation) {
+        currentStation = key;
+        saveSetting("ptv-station", key);
+        document.getElementById("updated").textContent = "loading";
+        refresh();
+      } else {
+        render();
+      }
+    });
+    menu.appendChild(btn);
+  }
+  section.appendChild(menu);
+}
+
+// Close the menu when tapping anywhere else
+document.addEventListener("click", () => {
+  if (menuOpen) {
+    menuOpen = false;
+    render();
+  }
+});
+
 function render() {
   if (!lastPayload) return;
   const board = document.getElementById("board");
@@ -370,59 +581,79 @@ function render() {
 
   // In the grid layout, height decides the row count, so use the generous cap.
   const isGrid = getComputedStyle(board).display === "grid";
+  const stationCfg = STATIONS[currentStation] ?? STATIONS[DEFAULT_STATION];
 
   for (const stop of lastPayload.stops) {
     const rule = RULES[stop.key] ?? DEFAULT_RULE;
     const cap = isGrid ? rule.maxFill : rule.maxShown;
+    const hideWithin = hideWithinFor(stop.key);
+    const isTrain = stop.key === "train";
 
     const section = document.createElement("section");
     section.dataset.key = stop.key; // used by landscape grid areas
+
     const h2 = document.createElement("h2");
-    h2.textContent = stop.label;
+    if (isTrain) {
+      h2.className = "picker";
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = stationCfg.label;
+      const caret = document.createElement("span");
+      caret.className = "caret";
+      caret.textContent = "\u25be";
+      h2.append(nameSpan, caret);
+      h2.addEventListener("click", (e) => {
+        e.stopPropagation();
+        menuOpen = !menuOpen;
+        render();
+      });
+    } else {
+      h2.textContent = stop.label;
+    }
     section.appendChild(h2);
 
-    // Train panel in grid layout: split by direction.
-    // Left column = outbound, right column = citybound.
-    const splitTrains = isGrid && stop.key === "train";
+    // Split trains into direction columns only in the grid layout,
+    // and only for stations configured with a split.
+    const split = isTrain && isGrid ? stationCfg.split : null;
 
     const rowsWrap = document.createElement("div");
-    rowsWrap.className = "rows" + (splitTrains ? " split" : "");
+    rowsWrap.className = "rows" + (split ? " split" : "");
     section.appendChild(rowsWrap);
 
-    let colOutbound = null;
-    let colCity = null;
-    if (splitTrains) {
-      colOutbound = document.createElement("div");
-      colOutbound.className = "col";
-      const h3out = document.createElement("h3");
-      h3out.textContent = "Outbound";
-      colOutbound.appendChild(h3out);
+    let colLeft = null;
+    let colRight = null;
+    if (split) {
+      colLeft = document.createElement("div");
+      colLeft.className = "col";
+      const h3l = document.createElement("h3");
+      h3l.textContent = split.left.label;
+      colLeft.appendChild(h3l);
 
-      colCity = document.createElement("div");
-      colCity.className = "col";
-      const h3city = document.createElement("h3");
-      h3city.textContent = "To City";
-      colCity.appendChild(h3city);
+      colRight = document.createElement("div");
+      colRight.className = "col";
+      const h3r = document.createElement("h3");
+      h3r.textContent = split.right.label;
+      colRight.appendChild(h3r);
 
-      rowsWrap.append(colOutbound, colCity);
+      rowsWrap.append(colLeft, colRight);
     }
 
     if (stop.error) {
       const div = document.createElement("div");
       div.className = "error";
       div.textContent = "Data unavailable. " + stop.error;
-      (splitTrains ? colOutbound : rowsWrap).appendChild(div);
+      (split ? colLeft : rowsWrap).appendChild(div);
     } else {
       let shown = 0;
       for (const dep of stop.departures) {
         if (shown >= cap) break;
         const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
         const mins = minutesUntil(bestIso);
-        if (mins < rule.hideWithinMin) continue; // gone, or too soon to catch
+        if (mins < hideWithin) continue; // gone, or too soon to catch
 
-        const row = buildRow(stop, dep, rule);
-        if (splitTrains) {
-          (isCitybound(dep.destination) ? colCity : colOutbound).appendChild(row);
+        const row = buildRow(stop.key, dep);
+        if (split) {
+          (pickColumn(split, dep) === "right" ? colRight : colLeft)
+            .appendChild(row);
         } else {
           rowsWrap.appendChild(row);
         }
@@ -432,10 +663,10 @@ function render() {
         const div = document.createElement("div");
         div.className = "empty";
         div.textContent = "No catchable departures right now.";
-        (splitTrains ? colOutbound : rowsWrap).appendChild(div);
-      } else if (splitTrains) {
-        // A direction with no services (e.g. late night) still gets a note
-        for (const col of [colOutbound, colCity]) {
+        (split ? colLeft : rowsWrap).appendChild(div);
+      } else if (split) {
+        // A group with no services (e.g. late night) still gets a note
+        for (const col of [colLeft, colRight]) {
           if (!col.querySelector(".row")) {
             const div = document.createElement("div");
             div.className = "empty";
@@ -445,17 +676,36 @@ function render() {
         }
       }
     }
+
+    if (isTrain && menuOpen) buildStationMenu(section);
     board.appendChild(section);
   }
 
   trimOverflow();
+  updateWalkToggle();
 }
+
+// ---- Walk filter toggle ----------------------------------------------------
+function updateWalkToggle() {
+  const btn = document.getElementById("walk-toggle");
+  btn.textContent = walkFilterOn
+    ? "Walk filter: " + WALK_MINUTES + " min"
+    : "Walk filter: off";
+  btn.classList.toggle("on", walkFilterOn);
+}
+document.getElementById("walk-toggle").addEventListener("click", (e) => {
+  e.stopPropagation();
+  walkFilterOn = !walkFilterOn;
+  saveSetting("ptv-walk-filter", walkFilterOn ? "on" : "off");
+  render();
+});
+updateWalkToggle();
 
 async function refresh() {
   const dot = document.getElementById("dot");
   const updated = document.getElementById("updated");
   try {
-    const res = await fetch("/api/board");
+    const res = await fetch("/api/board?station=" + encodeURIComponent(currentStation));
     if (!res.ok) throw new Error("HTTP " + res.status);
     lastPayload = await res.json();
     dot.className = "";
@@ -469,14 +719,15 @@ async function refresh() {
 
 refresh();
 setInterval(refresh, REFRESH_MS);
-// Re-render countdowns every 20s between fetches so minutes stay honest
-setInterval(render, 20_000);
+// Re-render countdowns every 20s between fetches so minutes stay honest.
+// Skip while the station menu is open so it doesn't close mid-choice.
+setInterval(() => { if (!menuOpen) render(); }, 20_000);
 
 // Re-fit rows when the window size or orientation changes
 let resizeTimer = null;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(render, 200);
+  resizeTimer = setTimeout(() => { if (!menuOpen) render(); }, 200);
 });
 
 // ---- Keep the screen awake on supported browsers (iOS 16.4+) ----
