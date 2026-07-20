@@ -109,7 +109,25 @@
     padding: 10px 14px;
     border-bottom: 1px solid var(--rule);
   }
-  .rows > .row:last-child { border-bottom: none; }
+  .rows > .row:last-child,
+  .col > .row:last-child { border-bottom: none; }
+
+  /* Direction-split train columns (built only in grid layout) */
+  .rows.split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    align-items: stretch;
+  }
+  .rows.split .col:first-child { border-right: 1px solid var(--rule); }
+  .col h3 {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--dim);
+    padding: 5px 10px 4px;
+    border-bottom: 1px solid var(--rule);
+  }
 
   .badge {
     font-family: "Archivo", sans-serif;
@@ -196,15 +214,7 @@
     .dest .meta { font-size: 10px; }
     .mins { font-size: 21px; }
     .mins small { font-size: 7px; }
-
-    /* trains flow into two columns */
-    section[data-key="train"] .rows {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-    }
-    section[data-key="train"] .row:nth-child(odd) {
-      border-right: 1px solid var(--rule);
-    }
+    .col h3 { font-size: 9px; padding: 4px 10px 3px; }
   }
 </style>
 </head>
@@ -260,6 +270,11 @@ function lineColor(routeName) {
 }
 const DEFAULT_RULE = { hideWithinMin: 0, maxShown: 4, maxFill: 12 };
 
+// Citybound = direction name mentions the city loop / Flinders Street
+function isCitybound(destination) {
+  return /city|flinders/i.test(destination || "");
+}
+
 let lastPayload = null;
 
 function melbTime(date) {
@@ -278,20 +293,72 @@ function minutesUntil(iso) {
   return Math.round((new Date(iso) - Date.now()) / 60000);
 }
 
+// Build one departure row element
+function buildRow(stop, dep, rule) {
+  const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
+  const mins = minutesUntil(bestIso);
+
+  const row = document.createElement("div");
+  row.className = "row";
+
+  const badge = document.createElement("span");
+  badge.className = "badge " + (stop.key === "train" ? "train" : "bus");
+  badge.textContent = stop.key === "train" ? dep.route.charAt(0) : dep.route;
+  if (stop.key === "train") {
+    const c = lineColor(dep.route);
+    if (c) {
+      badge.style.background = c.bg;
+      badge.style.color = c.fg;
+    }
+  }
+
+  const dest = document.createElement("div");
+  dest.className = "dest";
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = dep.destination;
+  const meta = document.createElement("span");
+  meta.className = "meta";
+  const bits = [];
+  if (dep.platform) bits.push("Platform " + dep.platform);
+  bits.push(dep.estimatedUtc ? "Live" : "Scheduled");
+  bits.push(melbTime(new Date(bestIso)));
+  meta.textContent = bits.join(" \u00b7 ");
+  dest.append(name, meta);
+
+  const minsEl = document.createElement("div");
+  minsEl.className = "mins" + (mins <= rule.hideWithinMin + 1 ? " now" : "");
+  minsEl.innerHTML = mins + "<small>min</small>";
+
+  row.append(badge, dest, minsEl);
+  return row;
+}
+
 // Remove trailing rows that don't fully fit inside their height-constrained
-// section. Only has an effect in the grid layout, where sections have a fixed
-// height; in the stacked layout sections grow to fit and nothing overflows.
+// section. For split (two-column) panels, trim from whichever column is
+// longer so both directions stay represented.
 function trimOverflow() {
   document.querySelectorAll("#board section").forEach((section) => {
     const rows = section.querySelector(".rows");
     if (!rows) return;
-    let guard = 60; // safety: never loop forever
-    while (
-      guard-- > 0 &&
-      rows.lastElementChild &&
-      section.scrollHeight > section.clientHeight
-    ) {
-      rows.lastElementChild.remove();
+    const isSplit = rows.classList.contains("split");
+    const cols = isSplit ? [...rows.querySelectorAll(".col")] : null;
+    let guard = 80; // safety: never loop forever
+    while (guard-- > 0 && section.scrollHeight > section.clientHeight) {
+      if (isSplit) {
+        let target = null;
+        let most = 0;
+        for (const col of cols) {
+          const n = col.querySelectorAll(".row").length;
+          if (n > most) { most = n; target = col; }
+        }
+        if (!target || most === 0) break;
+        const colRows = target.querySelectorAll(".row");
+        colRows[colRows.length - 1].remove();
+      } else {
+        if (!rows.lastElementChild) break;
+        rows.lastElementChild.remove();
+      }
     }
   });
 }
@@ -313,15 +380,38 @@ function render() {
     const h2 = document.createElement("h2");
     h2.textContent = stop.label;
     section.appendChild(h2);
+
+    // Train panel in grid layout: split by direction.
+    // Left column = outbound, right column = citybound.
+    const splitTrains = isGrid && stop.key === "train";
+
     const rowsWrap = document.createElement("div");
-    rowsWrap.className = "rows";
+    rowsWrap.className = "rows" + (splitTrains ? " split" : "");
     section.appendChild(rowsWrap);
+
+    let colOutbound = null;
+    let colCity = null;
+    if (splitTrains) {
+      colOutbound = document.createElement("div");
+      colOutbound.className = "col";
+      const h3out = document.createElement("h3");
+      h3out.textContent = "Outbound";
+      colOutbound.appendChild(h3out);
+
+      colCity = document.createElement("div");
+      colCity.className = "col";
+      const h3city = document.createElement("h3");
+      h3city.textContent = "To City";
+      colCity.appendChild(h3city);
+
+      rowsWrap.append(colOutbound, colCity);
+    }
 
     if (stop.error) {
       const div = document.createElement("div");
       div.className = "error";
       div.textContent = "Data unavailable. " + stop.error;
-      rowsWrap.appendChild(div);
+      (splitTrains ? colOutbound : rowsWrap).appendChild(div);
     } else {
       let shown = 0;
       for (const dep of stop.departures) {
@@ -330,48 +420,29 @@ function render() {
         const mins = minutesUntil(bestIso);
         if (mins < rule.hideWithinMin) continue; // gone, or too soon to catch
 
-        const row = document.createElement("div");
-        row.className = "row";
-
-        const badge = document.createElement("span");
-        badge.className = "badge " + (stop.key === "train" ? "train" : "bus");
-        badge.textContent = stop.key === "train" ? dep.route.charAt(0) : dep.route;
-        if (stop.key === "train") {
-          const c = lineColor(dep.route);
-          if (c) {
-            badge.style.background = c.bg;
-            badge.style.color = c.fg;
-          }
+        const row = buildRow(stop, dep, rule);
+        if (splitTrains) {
+          (isCitybound(dep.destination) ? colCity : colOutbound).appendChild(row);
+        } else {
+          rowsWrap.appendChild(row);
         }
-
-        const dest = document.createElement("div");
-        dest.className = "dest";
-        const name = document.createElement("span");
-        name.className = "name";
-        name.textContent = dep.destination;
-        const meta = document.createElement("span");
-        meta.className = "meta";
-        const bits = [];
-        if (dep.platform) bits.push("Platform " + dep.platform);
-        bits.push(dep.estimatedUtc ? "Live" : "Scheduled");
-        bits.push(melbTime(new Date(bestIso)));
-        meta.textContent = bits.join(" \u00b7 ");
-        dest.append(name, meta);
-
-        const minsEl = document.createElement("div");
-        minsEl.className = "mins" + (mins <= rule.hideWithinMin + 1 ? " now" : "");
-        minsEl.innerHTML = mins +
-          "<small>min</small>";
-
-        row.append(badge, dest, minsEl);
-        rowsWrap.appendChild(row);
         shown++;
       }
       if (shown === 0) {
         const div = document.createElement("div");
         div.className = "empty";
         div.textContent = "No catchable departures right now.";
-        rowsWrap.appendChild(div);
+        (splitTrains ? colOutbound : rowsWrap).appendChild(div);
+      } else if (splitTrains) {
+        // A direction with no services (e.g. late night) still gets a note
+        for (const col of [colOutbound, colCity]) {
+          if (!col.querySelector(".row")) {
+            const div = document.createElement("div");
+            div.className = "empty";
+            div.textContent = "No departures";
+            col.appendChild(div);
+          }
+        }
       }
     }
     board.appendChild(section);
