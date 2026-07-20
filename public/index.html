@@ -21,6 +21,13 @@
     --bus: #e07020;          /* bus orange */
     --rule: #2a2a2a;
     --accent: #ffffff;
+
+    /* body padding, reused by the sticky header bleed */
+    --pad: clamp(12px, 3vw, 28px);
+    --pad-top: max(var(--pad), env(safe-area-inset-top));
+    --pad-right: max(var(--pad), env(safe-area-inset-right));
+    --pad-bottom: max(var(--pad), env(safe-area-inset-bottom));
+    --pad-left: max(var(--pad), env(safe-area-inset-left));
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
@@ -30,21 +37,27 @@
     font-family: "Barlow Semi Condensed", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     /* keep content clear of iPhone notch / home indicator */
-    padding: max(clamp(12px, 3vw, 28px), env(safe-area-inset-top))
-             max(clamp(12px, 3vw, 28px), env(safe-area-inset-right))
-             max(clamp(12px, 3vw, 28px), env(safe-area-inset-bottom))
-             max(clamp(12px, 3vw, 28px), env(safe-area-inset-left));
+    padding: var(--pad-top) var(--pad-right) var(--pad-bottom) var(--pad-left);
     display: flex;
     flex-direction: column;
     gap: clamp(12px, 2.5vw, 22px);
   }
 
-  /* Header: clock + walk filter + freshness */
+  /* Header: clock + walk filter + freshness.
+     Sticky so the clock and controls stay visible if the page scrolls;
+     negative margins bleed it over the body padding so rows slide
+     underneath it cleanly. */
   header {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
     gap: 12px;
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    background: var(--board);
+    margin: calc(-1 * var(--pad-top)) calc(-1 * var(--pad-right)) 0 calc(-1 * var(--pad-left));
+    padding: var(--pad-top) var(--pad-right) 10px var(--pad-left);
   }
   #clock {
     font-family: "Archivo", sans-serif;
@@ -111,6 +124,9 @@
     overflow: hidden;
   }
   section h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: clamp(14px, 3.8vw, 18px);
     font-weight: 600;
     text-transform: uppercase;
@@ -123,12 +139,38 @@
     cursor: pointer;
     user-select: none;
     -webkit-user-select: none;
-    display: flex;
-    align-items: center;
-    gap: 8px;
   }
-  h2.picker .caret { color: var(--dim); font-size: 0.85em; }
+  h2 .caret { color: var(--dim); font-size: 0.85em; }
   h2.picker:hover { color: var(--ink); }
+
+  /* Comfortable touch targets on phones */
+  @media (orientation: portrait) {
+    section h2 { min-height: 44px; }
+    #walk-toggle { min-height: 36px; }
+  }
+
+  /* Collapsed bus sections (portrait): next times shown inline in the header */
+  h2.bus-summary {
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .h2-times {
+    margin-left: auto;
+    display: flex;
+    gap: 12px;
+    font-family: "Archivo", sans-serif;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    font-size: clamp(13px, 3.6vw, 16px);
+    color: var(--amber);
+    letter-spacing: 0;
+    text-transform: none;
+    white-space: nowrap;
+  }
+  .h2-times.none { color: var(--dim); font-family: inherit; font-weight: 500; }
+  h2.bus-summary .caret { transition: transform 0.15s ease; }
+  h2.bus-summary.open .caret { transform: rotate(180deg); }
 
   .station-menu {
     position: absolute;
@@ -171,7 +213,7 @@
   .rows > .row:last-child,
   .col > .row:last-child { border-bottom: none; }
 
-  /* Direction-split train columns (built only in grid layout) */
+  /* Direction-split train columns (grid layout only) */
   .rows.split {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -186,6 +228,14 @@
     color: var(--dim);
     padding: 5px 10px 4px;
     border-bottom: 1px solid var(--rule);
+  }
+
+  /* Direction-split train groups, stacked (portrait layout) */
+  .rows.stacked-split .col h3 {
+    padding: 7px 14px 6px;
+  }
+  .rows.stacked-split .col:not(:first-child) h3 {
+    border-top: 1px solid var(--rule);
   }
 
   .badge {
@@ -294,18 +344,30 @@ const REFRESH_MS = 45_000;
 const TZ = "Australia/Melbourne";
 const WALK_MINUTES = 5;
 
+// ---- Portrait ("decision view") display tuning ----------------------------
+// Portrait is for "which service do I catch right now?", so it shows far
+// fewer rows than the ambient landscape board.
+const PORTRAIT = {
+  trainPerGroup: 3,   // rows per direction group
+  trainSingleList: 5, // fallback cap if a station has no split config
+  busSummaryTimes: 2, // departure times shown inline in a collapsed bus header
+  busExpandedRows: 4, // rows when a bus section is tapped open
+};
+
 // ---- Station registry (keys must match the Worker) ------------------------
 // split: null -> single chronological list.
 // split: { left: {label, test?, field?}, right: {label, test?, field?} }
 //   Exactly one side carries a regex test; the other side is the fallback.
 //   field: "destination" (default) or "route" - which value the regex tests.
-//   Route-based groups are stable all day; destination-based splits are used
-//   at suburban stations where "City ..." reliably marks the citybound side.
+//   cityWard: "left" | "right" - which side is the citybound side, where that
+//   is meaningful. Portrait uses it to put the likely-wanted direction first
+//   (citybound before noon, outbound after).
 
 // Suburban stations: citybound trains' direction says "City (...)".
 const CITY_SPLIT = {
   left:  { label: "Outbound" },
   right: { label: "To City", test: /city|flinders/i },
+  cityWard: "right",
 };
 
 // Metro Tunnel stations: through-running, so split by which end of the
@@ -313,10 +375,12 @@ const CITY_SPLIT = {
 const TUNNEL_SPLIT_NORTH = {
   left:  { label: "To Sunbury", test: /sunbury/i },
   right: { label: "To City / Cranbourne / Pakenham", test: /city|cranbourne|pakenham/i },
+  cityWard: "right",
 };
 const TUNNEL_SPLIT_SOUTH = {
   left:  { label: "To City / Sunbury", test: /sunbury|city/i },
-  right: { label: "To Cranbourne / Pakenham", test: /cranbourne|pakenham/i},
+  right: { label: "To Cranbourne / Pakenham", test: /cranbourne|pakenham/i },
+  cityWard: "left",
 };
 
 // Southern Cross: cross-city (Werribee / Williamstown) vs everything else.
@@ -343,7 +407,7 @@ const MC_SPLIT = {
 
 // Flagstaff / Parliament: platform-side groups expressed as line groups.
 const NORTH_LOOP_SPLIT = {
-  left:  { label: "Burnley / Craigieburn / Upfield"},
+  left:  { label: "Burnley / Craigieburn / Upfield" },
   right: { label: "Hurstbridge / Mernda / Frankston", test: /hurstbridge|mernda|frankston/i, field: "route" },
 };
 
@@ -368,13 +432,12 @@ const STATIONS = {
   "werribee":          { label: "Werribee Station",                  split: CITY_SPLIT },
   "middle-footscray":  { label: "Middle Footscray",                  split: CITY_SPLIT },
   "west-footscray":    { label: "West Footscray",                    split: CITY_SPLIT },
-  "north-richmond":    { label: "North Richmond",                    split: CITY_SPLIT },
-  "hawksburn":         { label: "Hawksburne Station",                split: CITY_SPLIT },
+  // "north-richmond" removed until its real stop ID is confirmed in the
+  // Worker (it was sharing Middle Footscray's ID 1127).
+  "hawksburn":         { label: "Hawksburn Station",                 split: CITY_SPLIT },
   "watergardens":      { label: "Watergardens Station",              split: CITY_SPLIT },
   "flemington-bridge": { label: "Flemington Bridge",                 split: CITY_SPLIT },
   "macaulay":          { label: "Macaulay Station",                  split: CITY_SPLIT },
-
-
 };
 const DEFAULT_STATION = "footscray";
 
@@ -393,17 +456,17 @@ let currentStation = loadSetting("ptv-station", DEFAULT_STATION);
 if (!(currentStation in STATIONS)) currentStation = DEFAULT_STATION;
 let walkFilterOn = loadSetting("ptv-walk-filter", "on") === "on";
 let menuOpen = false;
+const expandedBuses = new Set(); // bus sections tapped open in portrait
 
-// Display rules per stop.
-// maxShown: row cap in stacked (portrait) layout, where sections grow freely.
+// Display rules per stop (landscape grid layout).
 // maxFill: generous cap in the grid layout, where available height decides
 //          the real count (overflowing rows are trimmed after render).
 const RULES = {
-  "train":    { maxShown: 15, maxFill: 30 },
-  "bus-city": { maxShown: 8,  maxFill: 12 },
-  "bus-west": { maxShown: 8,  maxFill: 12 },
+  "train":    { maxFill: 30 },
+  "bus-city": { maxFill: 12 },
+  "bus-west": { maxFill: 12 },
 };
-const DEFAULT_RULE = { maxShown: 4, maxFill: 12 };
+const DEFAULT_RULE = { maxFill: 12 };
 
 // The walk filter only applies to trains (your walk to the station).
 function hideWithinFor(stopKey) {
@@ -469,6 +532,18 @@ function pickColumn(split, dep) {
   return "left";
 }
 
+// Group order for the stacked portrait layout: where a citybound side is
+// defined, show it first before noon and second after noon. Line-group
+// splits (no cityWard) keep their configured order.
+function orderedSides(split) {
+  if (!split || !split.cityWard) return ["left", "right"];
+  const morning = new Date().getHours() < 12;
+  const first = morning
+    ? split.cityWard
+    : (split.cityWard === "left" ? "right" : "left");
+  return first === "left" ? ["left", "right"] : ["right", "left"];
+}
+
 // Build one departure row element
 function buildRow(stopKey, dep) {
   const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
@@ -500,7 +575,7 @@ function buildRow(stopKey, dep) {
   if (dep.platform) bits.push("Platform " + dep.platform);
   bits.push(dep.estimatedUtc ? "Live" : "Scheduled");
   bits.push(melbTime(new Date(bestIso)));
-  meta.textContent = bits.join(" \u00b7 ");
+  meta.textContent = bits.join(" · ");
   dest.append(name, meta);
 
   const minsEl = document.createElement("div");
@@ -512,9 +587,10 @@ function buildRow(stopKey, dep) {
 }
 
 // Remove trailing rows that don't fully fit inside their height-constrained
-// section. For split (two-column) panels, trim from whichever column is
-// longer so both directions stay represented.
-function trimOverflow() {
+// section. Only meaningful in the landscape grid layout, where sections have
+// a fixed height; portrait sections are capped by row count instead.
+function trimOverflow(isGrid) {
+  if (!isGrid) return;
   document.querySelectorAll("#board section").forEach((section) => {
     const rows = section.querySelector(".rows");
     if (!rows) return;
@@ -574,19 +650,230 @@ document.addEventListener("click", () => {
   }
 });
 
+// ---- Section builders ------------------------------------------------------
+
+function makeEmptyNote(text) {
+  const div = document.createElement("div");
+  div.className = "empty";
+  div.textContent = text;
+  return div;
+}
+
+// Landscape grid: two side-by-side direction columns (original behaviour).
+function buildTrainGrid(section, stop, stationCfg) {
+  const split = stationCfg.split;
+  const cap = (RULES["train"] ?? DEFAULT_RULE).maxFill;
+  const hideWithin = hideWithinFor("train");
+
+  const rowsWrap = document.createElement("div");
+  rowsWrap.className = "rows" + (split ? " split" : "");
+  section.appendChild(rowsWrap);
+
+  let colLeft = null;
+  let colRight = null;
+  if (split) {
+    colLeft = document.createElement("div");
+    colLeft.className = "col";
+    const h3l = document.createElement("h3");
+    h3l.textContent = split.left.label;
+    colLeft.appendChild(h3l);
+
+    colRight = document.createElement("div");
+    colRight.className = "col";
+    const h3r = document.createElement("h3");
+    h3r.textContent = split.right.label;
+    colRight.appendChild(h3r);
+
+    rowsWrap.append(colLeft, colRight);
+  }
+
+  if (stop.error) {
+    const div = document.createElement("div");
+    div.className = "error";
+    div.textContent = "Data unavailable. " + stop.error;
+    (split ? colLeft : rowsWrap).appendChild(div);
+    return;
+  }
+
+  let shown = 0;
+  for (const dep of stop.departures) {
+    if (shown >= cap) break;
+    const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
+    if (minutesUntil(bestIso) < hideWithin) continue; // gone, or too soon
+
+    const row = buildRow("train", dep);
+    if (split) {
+      (pickColumn(split, dep) === "right" ? colRight : colLeft).appendChild(row);
+    } else {
+      rowsWrap.appendChild(row);
+    }
+    shown++;
+  }
+  if (shown === 0) {
+    (split ? colLeft : rowsWrap).appendChild(
+      makeEmptyNote("No catchable departures right now."),
+    );
+  } else if (split) {
+    for (const col of [colLeft, colRight]) {
+      if (!col.querySelector(".row")) col.appendChild(makeEmptyNote("No departures"));
+    }
+  }
+}
+
+// Portrait: direction groups stacked vertically, likely-wanted group first,
+// few rows per group. No scrolling should be needed.
+function buildTrainStacked(section, stop, stationCfg) {
+  const split = stationCfg.split;
+  const hideWithin = hideWithinFor("train");
+
+  const rowsWrap = document.createElement("div");
+  rowsWrap.className = "rows" + (split ? " stacked-split" : "");
+  section.appendChild(rowsWrap);
+
+  if (stop.error) {
+    const div = document.createElement("div");
+    div.className = "error";
+    div.textContent = "Data unavailable. " + stop.error;
+    rowsWrap.appendChild(div);
+    return;
+  }
+
+  if (!split) {
+    let shown = 0;
+    for (const dep of stop.departures) {
+      if (shown >= PORTRAIT.trainSingleList) break;
+      const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
+      if (minutesUntil(bestIso) < hideWithin) continue;
+      rowsWrap.appendChild(buildRow("train", dep));
+      shown++;
+    }
+    if (shown === 0) rowsWrap.appendChild(makeEmptyNote("No catchable departures right now."));
+    return;
+  }
+
+  const sides = orderedSides(split);
+  const colBySide = {};
+  for (const side of sides) {
+    const col = document.createElement("div");
+    col.className = "col";
+    const h3 = document.createElement("h3");
+    h3.textContent = split[side].label;
+    col.appendChild(h3);
+    rowsWrap.appendChild(col);
+    colBySide[side] = col;
+  }
+
+  const counts = { left: 0, right: 0 };
+  for (const dep of stop.departures) {
+    if (counts.left >= PORTRAIT.trainPerGroup && counts.right >= PORTRAIT.trainPerGroup) break;
+    const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
+    if (minutesUntil(bestIso) < hideWithin) continue;
+    const side = pickColumn(split, dep);
+    if (counts[side] >= PORTRAIT.trainPerGroup) continue;
+    colBySide[side].appendChild(buildRow("train", dep));
+    counts[side]++;
+  }
+
+  for (const side of sides) {
+    if (!colBySide[side].querySelector(".row")) {
+      colBySide[side].appendChild(makeEmptyNote("No departures"));
+    }
+  }
+}
+
+// Landscape grid: full bus rows (original behaviour).
+function buildBusGrid(section, stop) {
+  const cap = (RULES[stop.key] ?? DEFAULT_RULE).maxFill;
+  const rowsWrap = document.createElement("div");
+  rowsWrap.className = "rows";
+  section.appendChild(rowsWrap);
+
+  if (stop.error) {
+    const div = document.createElement("div");
+    div.className = "error";
+    div.textContent = "Data unavailable. " + stop.error;
+    rowsWrap.appendChild(div);
+    return;
+  }
+
+  let shown = 0;
+  for (const dep of stop.departures) {
+    if (shown >= cap) break;
+    if (minutesUntil(dep.estimatedUtc ?? dep.scheduledUtc) < 0) continue;
+    rowsWrap.appendChild(buildRow(stop.key, dep));
+    shown++;
+  }
+  if (shown === 0) rowsWrap.appendChild(makeEmptyNote("No catchable departures right now."));
+}
+
+// Portrait: bus section collapses to its header with the next times inline;
+// tapping toggles a short detailed list.
+function buildBusPortrait(section, stop, h2) {
+  const expanded = expandedBuses.has(stop.key);
+  h2.classList.add("bus-summary");
+  if (expanded) h2.classList.add("open");
+
+  const caret = document.createElement("span");
+  caret.className = "caret";
+  caret.textContent = "▾";
+
+  const times = document.createElement("span");
+  times.className = "h2-times";
+  const catchable = (stop.departures ?? []).filter(
+    (dep) => minutesUntil(dep.estimatedUtc ?? dep.scheduledUtc) >= 0,
+  );
+  if (stop.error) {
+    times.classList.add("none");
+    times.textContent = "no data";
+  } else if (catchable.length === 0) {
+    times.classList.add("none");
+    times.textContent = "none";
+  } else {
+    for (const dep of catchable.slice(0, PORTRAIT.busSummaryTimes)) {
+      const chip = document.createElement("span");
+      const mins = minutesUntil(dep.estimatedUtc ?? dep.scheduledUtc);
+      chip.textContent = dep.route + " " + mins + "m";
+      times.appendChild(chip);
+    }
+  }
+  h2.append(times, caret);
+
+  h2.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (expandedBuses.has(stop.key)) expandedBuses.delete(stop.key);
+    else expandedBuses.add(stop.key);
+    render();
+  });
+
+  if (!expanded) return;
+
+  const rowsWrap = document.createElement("div");
+  rowsWrap.className = "rows";
+  section.appendChild(rowsWrap);
+
+  if (stop.error) {
+    const div = document.createElement("div");
+    div.className = "error";
+    div.textContent = "Data unavailable. " + stop.error;
+    rowsWrap.appendChild(div);
+    return;
+  }
+  const shownDeps = catchable.slice(0, PORTRAIT.busExpandedRows);
+  for (const dep of shownDeps) rowsWrap.appendChild(buildRow(stop.key, dep));
+  if (shownDeps.length === 0) rowsWrap.appendChild(makeEmptyNote("No departures"));
+}
+
 function render() {
   if (!lastPayload) return;
   const board = document.getElementById("board");
   board.innerHTML = "";
 
-  // In the grid layout, height decides the row count, so use the generous cap.
+  // Grid (landscape) = ambient board: height decides row counts.
+  // Stacked (portrait/desktop) = decision view: tight row caps, no scrolling.
   const isGrid = getComputedStyle(board).display === "grid";
   const stationCfg = STATIONS[currentStation] ?? STATIONS[DEFAULT_STATION];
 
   for (const stop of lastPayload.stops) {
-    const rule = RULES[stop.key] ?? DEFAULT_RULE;
-    const cap = isGrid ? rule.maxFill : rule.maxShown;
-    const hideWithin = hideWithinFor(stop.key);
     const isTrain = stop.key === "train";
 
     const section = document.createElement("section");
@@ -599,7 +886,7 @@ function render() {
       nameSpan.textContent = stationCfg.label;
       const caret = document.createElement("span");
       caret.className = "caret";
-      caret.textContent = "\u25be";
+      caret.textContent = "▾";
       h2.append(nameSpan, caret);
       h2.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -607,81 +894,25 @@ function render() {
         render();
       });
     } else {
-      h2.textContent = stop.label;
+      const labelSpan = document.createElement("span");
+      labelSpan.textContent = stop.label;
+      h2.appendChild(labelSpan);
     }
     section.appendChild(h2);
 
-    // Split trains into direction columns only in the grid layout,
-    // and only for stations configured with a split.
-    const split = isTrain && isGrid ? stationCfg.split : null;
-
-    const rowsWrap = document.createElement("div");
-    rowsWrap.className = "rows" + (split ? " split" : "");
-    section.appendChild(rowsWrap);
-
-    let colLeft = null;
-    let colRight = null;
-    if (split) {
-      colLeft = document.createElement("div");
-      colLeft.className = "col";
-      const h3l = document.createElement("h3");
-      h3l.textContent = split.left.label;
-      colLeft.appendChild(h3l);
-
-      colRight = document.createElement("div");
-      colRight.className = "col";
-      const h3r = document.createElement("h3");
-      h3r.textContent = split.right.label;
-      colRight.appendChild(h3r);
-
-      rowsWrap.append(colLeft, colRight);
-    }
-
-    if (stop.error) {
-      const div = document.createElement("div");
-      div.className = "error";
-      div.textContent = "Data unavailable. " + stop.error;
-      (split ? colLeft : rowsWrap).appendChild(div);
+    if (isTrain) {
+      if (isGrid) buildTrainGrid(section, stop, stationCfg);
+      else buildTrainStacked(section, stop, stationCfg);
     } else {
-      let shown = 0;
-      for (const dep of stop.departures) {
-        if (shown >= cap) break;
-        const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
-        const mins = minutesUntil(bestIso);
-        if (mins < hideWithin) continue; // gone, or too soon to catch
-
-        const row = buildRow(stop.key, dep);
-        if (split) {
-          (pickColumn(split, dep) === "right" ? colRight : colLeft)
-            .appendChild(row);
-        } else {
-          rowsWrap.appendChild(row);
-        }
-        shown++;
-      }
-      if (shown === 0) {
-        const div = document.createElement("div");
-        div.className = "empty";
-        div.textContent = "No catchable departures right now.";
-        (split ? colLeft : rowsWrap).appendChild(div);
-      } else if (split) {
-        // A group with no services (e.g. late night) still gets a note
-        for (const col of [colLeft, colRight]) {
-          if (!col.querySelector(".row")) {
-            const div = document.createElement("div");
-            div.className = "empty";
-            div.textContent = "No departures";
-            col.appendChild(div);
-          }
-        }
-      }
+      if (isGrid) buildBusGrid(section, stop);
+      else buildBusPortrait(section, stop, h2);
     }
 
     if (isTrain && menuOpen) buildStationMenu(section);
     board.appendChild(section);
   }
 
-  trimOverflow();
+  trimOverflow(isGrid);
   updateWalkToggle();
 }
 

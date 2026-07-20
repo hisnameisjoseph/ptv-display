@@ -46,8 +46,12 @@ const STATIONS: Record<string, { label: string; stopIds: number[] }> = {
   "werribee":          { label: "Werribee Station",                 stopIds: [1205] },
   "middle-footscray":  { label: "Middle Footscray",                 stopIds: [1127] },
   "west-footscray":    { label: "West Footscray",                   stopIds: [1206] },
-  "north-richmond":    { label: "North Richmond",                   stopIds: [1127] },
-  "hawksburn":         { label: "Hawksburne Station",               stopIds: [1089] },
+  // FIXME: 1127 is Middle Footscray's ID. Look up the real North Richmond
+  // stop_id before re-enabling, e.g. with a signed request to:
+  //   /v3/search/north%20richmond?route_types=0
+  // then restore this entry with the correct ID.
+  // "north-richmond":  { label: "North Richmond",                  stopIds: [TODO] },
+  "hawksburn":         { label: "Hawksburn Station",                stopIds: [1089] },
   "watergardens":      { label: "Watergardens Station",             stopIds: [1202] },
   "flemington-bridge": { label: "Flemington Bridge",                stopIds: [1069] },
   "macaulay":          { label: "Macaulay Station",                 stopIds: [1116] },
