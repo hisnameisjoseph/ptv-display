@@ -4,7 +4,7 @@ A real-time public transport departures board for Melbourne, built as a live PID
 
 Built with TypeScript on Cloudflare Workers and Pages, running entirely on free tiers with no ongoing hosting cost.
 
-**Live demo:** _[add your workers.dev URL here]_
+**Live demo:** _[ptv display](https://ptv-display.josephforanu.workers.dev/)_
 
 _[add a screenshot or two here — the landscape board and the phone view make a strong first impression]_
 
