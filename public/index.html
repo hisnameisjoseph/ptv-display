@@ -8,7 +8,7 @@
 <title>Melbourne Departures</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=Barlow+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
 <style>
   :root {
     --board: #000000;        /* night board */
@@ -22,6 +22,12 @@
     --rule: #2a2a2a;
     --accent: #ffffff;
 
+    /* Two type roles:
+       --font-display : Public Sans, for badge / destination / countdown
+       --font-ui      : Inter, for meta, "min", labels, menu, clock */
+    --font-display: "Public Sans", system-ui, sans-serif;
+    --font-ui: "Inter", system-ui, sans-serif;
+
     /* body padding, reused by the sticky header bleed */
     --pad: clamp(12px, 3vw, 28px);
     --pad-top: max(var(--pad), env(safe-area-inset-top));
@@ -34,7 +40,7 @@
   body {
     background: var(--board);
     color: var(--ink);
-    font-family: "Barlow Semi Condensed", system-ui, sans-serif;
+    font-family: var(--font-ui);
     -webkit-font-smoothing: antialiased;
     /* keep content clear of iPhone notch / home indicator */
     padding: var(--pad-top) var(--pad-right) var(--pad-bottom) var(--pad-left);
@@ -49,7 +55,7 @@
      underneath it cleanly. */
   header {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
     position: sticky;
@@ -60,10 +66,10 @@
     padding: var(--pad-top) var(--pad-right) 10px var(--pad-left);
   }
   #clock {
-    font-family: "Archivo", sans-serif;
+    font-family: var(--font-ui);
     font-weight: 600;
     font-size: clamp(28px, 8vw, 44px);
-    letter-spacing: 0.02em;
+    letter-spacing: 0.01em;
     font-variant-numeric: tabular-nums;
   }
   #header-right {
@@ -71,18 +77,41 @@
     align-items: center;
     gap: 12px;
   }
-  #walk-toggle {
+
+  /* Walk-filter stepper: label toggles off; minus/plus nudge the value. */
+  #walk {
+    display: flex;
+    align-items: center;
+    gap: 2px;
     background: #1a1a1a;
     border: 1px solid var(--rule);
-    color: var(--dim);
     border-radius: 6px;
-    padding: 4px 10px;
+    overflow: hidden;
+  }
+  #walk.on { border-color: #2c4a38; }
+  #walk button {
+    background: none;
+    border: none;
+    color: var(--dim);
     font: inherit;
+    font-family: var(--font-ui);
+    font-weight: 600;
+    cursor: pointer;
+    padding: 5px 9px;
+    line-height: 1;
+  }
+  #walk button:hover { color: var(--ink); }
+  #walk .step { font-size: 15px; min-width: 26px; }
+  #walk-label {
     font-size: clamp(11px, 3vw, 13px);
     font-weight: 500;
-    cursor: pointer;
+    white-space: nowrap;
+    padding: 5px 8px;
   }
-  #walk-toggle.on { color: var(--live); border-color: #2c4a38; }
+  #walk.on #walk-label { color: var(--live); }
+  /* Hide the steppers when the filter is off, so it reads as a single chip */
+  #walk:not(.on) .step { display: none; }
+
   #freshness {
     display: flex;
     align-items: center;
@@ -127,39 +156,54 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    font-family: var(--font-ui);
     font-size: clamp(14px, 3.8vw, 18px);
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
     color: var(--dim);
     padding: 10px 14px 8px;
     border-bottom: 1px solid var(--rule);
   }
-  h2.picker {
+  h2 .h2-name {
     cursor: pointer;
     user-select: none;
     -webkit-user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
+  h2.picker .h2-name:hover { color: var(--ink); }
   h2 .caret { color: var(--dim); font-size: 0.85em; }
-  h2.picker:hover { color: var(--ink); }
+
+  /* Collapse chevron, right side of both train and bus headers (portrait) */
+  .collapse-btn {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--dim);
+    font-size: 15px;
+    cursor: pointer;
+    padding: 4px 6px;
+    line-height: 1;
+    transition: transform 0.15s ease;
+  }
+  .collapse-btn:hover { color: var(--ink); }
+  .collapse-btn.collapsed { transform: rotate(-90deg); }
 
   /* Comfortable touch targets on phones */
   @media (orientation: portrait) {
     section h2 { min-height: 44px; }
-    #walk-toggle { min-height: 36px; }
+    #walk button, #walk-label { min-height: 34px; display: flex; align-items: center; }
   }
 
-  /* Collapsed bus sections (portrait): next times shown inline in the header */
-  h2.bus-summary {
-    cursor: pointer;
-    user-select: none;
-    -webkit-user-select: none;
-  }
+  /* Collapsed bus sections (portrait): next times shown inline in the header.
+     The times sit to the right, just before the collapse chevron. */
   .h2-times {
     margin-left: auto;
     display: flex;
     gap: 12px;
-    font-family: "Archivo", sans-serif;
+    font-family: var(--font-display);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     font-size: clamp(13px, 3.6vw, 16px);
@@ -168,9 +212,10 @@
     text-transform: none;
     white-space: nowrap;
   }
-  .h2-times.none { color: var(--dim); font-family: inherit; font-weight: 500; }
-  h2.bus-summary .caret { transition: transform 0.15s ease; }
-  h2.bus-summary.open .caret { transform: rotate(180deg); }
+  /* When the times are present, they take the auto margin, so the collapse
+     button shouldn't also push left. */
+  .h2-times + .collapse-btn { margin-left: 10px; }
+  .h2-times.none { color: var(--dim); font-family: var(--font-ui); font-weight: 500; }
 
   .station-menu {
     position: absolute;
@@ -180,12 +225,27 @@
     background: #1a1a1a;
     border: 1px solid var(--rule);
     border-radius: 8px;
-    min-width: 250px;
-    max-height: min(60vh, 340px);
-    overflow-y: auto;
+    min-width: 260px;
+    max-height: min(64vh, 380px);
+    display: flex;
+    flex-direction: column;
     box-shadow: 0 10px 28px rgba(0, 0, 0, 0.65);
+    overflow: hidden;
   }
-  .station-menu button {
+  .station-search {
+    border: none;
+    border-bottom: 1px solid var(--rule);
+    background: #222;
+    color: var(--ink);
+    font: inherit;
+    font-family: var(--font-ui);
+    font-size: 14px;
+    padding: 10px 14px;
+    outline: none;
+  }
+  .station-search::placeholder { color: #6d6d6d; }
+  .station-list { overflow-y: auto; }
+  .station-menu button.opt {
     display: block;
     width: 100%;
     text-align: left;
@@ -195,12 +255,19 @@
     border-bottom: 1px solid #222;
     color: var(--ink);
     font: inherit;
+    font-family: var(--font-ui);
     font-size: 14px;
     cursor: pointer;
   }
-  .station-menu button:last-child { border-bottom: none; }
-  .station-menu button:hover { background: #262626; }
-  .station-menu button.active { color: var(--amber); }
+  .station-menu button.opt:last-child { border-bottom: none; }
+  .station-menu button.opt:hover,
+  .station-menu button.opt.highlight { background: #262626; }
+  .station-menu button.opt.active { color: var(--amber); }
+  .station-menu .no-match {
+    padding: 12px 14px;
+    color: var(--dim);
+    font-size: 13px;
+  }
 
   .row {
     display: grid;
@@ -221,6 +288,7 @@
   }
   .rows.split .col:first-child { border-right: 1px solid var(--rule); }
   .col h3 {
+    font-family: var(--font-ui);
     font-size: 11px;
     font-weight: 600;
     text-transform: uppercase;
@@ -239,8 +307,8 @@
   }
 
   .badge {
-    font-family: "Archivo", sans-serif;
-    font-weight: 600;
+    font-family: var(--font-display);
+    font-weight: 700;
     font-size: clamp(13px, 3.6vw, 16px);
     padding: 3px 8px;
     border-radius: 5px;
@@ -257,6 +325,7 @@
     min-width: 0;
   }
   .dest .name {
+    font-family: var(--font-display);
     font-weight: 600;
     font-size: clamp(16px, 4.6vw, 21px);
     white-space: nowrap;
@@ -264,14 +333,15 @@
     text-overflow: ellipsis;
   }
   .dest .meta {
+    font-family: var(--font-ui);
     color: var(--dim);
     font-size: clamp(11px, 3vw, 13px);
-    font-weight: 500;
+    font-weight: 400;
   }
 
   .mins {
-    font-family: "Archivo", sans-serif;
-    font-weight: 600;
+    font-family: var(--font-display);
+    font-weight: 700;
     font-variant-numeric: tabular-nums;
     font-size: clamp(24px, 7.5vw, 36px);
     color: var(--amber);
@@ -280,8 +350,9 @@
   }
   .mins small {
     display: block;
-    font-family: "Barlow Semi Condensed", sans-serif;
+    font-family: var(--font-ui);
     font-size: clamp(10px, 2.6vw, 12px);
+    font-weight: 500;
     color: var(--dim);
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -296,12 +367,15 @@
   }
   .error { color: #d98380; }
 
-  /* ---- Landscape phone / small tablet: trains left, buses right ---- */
-  @media (orientation: landscape) and (max-width: 2532px) and (max-height: 1170px) {
+  /* ---- Wall-display layout: trains left, buses stacked right ----
+     Triggered by landscape orientation on a wide-enough viewport.
+     This is the "ambient board" mode (spare phone in landscape, or a
+     monitor). Portrait and narrow windows use the stacked decision view. */
+  @media (orientation: landscape) and (min-width: 700px) {
     body { gap: 10px; }
     #clock { font-size: 16px; }
     #freshness { font-size: 11px; }
-    #walk-toggle { font-size: 10px; padding: 2px 8px; }
+    #walk-label { font-size: 10px; }
     #board {
       display: grid;
       grid-template-columns: 1.75fr 1fr;
@@ -326,6 +400,8 @@
     .mins { font-size: 19px; }
     .mins small { font-size: 8px; }
     .col h3 { font-size: 9px; padding: 4px 10px 3px; }
+    /* the collapse control is a portrait affordance; hide on the wall board */
+    .collapse-btn { display: none; }
   }
 </style>
 </head>
@@ -333,7 +409,11 @@
   <header>
     <div id="clock">--:--</div>
     <div id="header-right">
-      <button id="walk-toggle" type="button">Walk filter</button>
+      <div id="walk">
+        <button type="button" class="step" id="walk-minus" aria-label="Less walk time">&minus;</button>
+        <span id="walk-label">Walk filter</span>
+        <button type="button" class="step" id="walk-plus" aria-label="More walk time">+</button>
+      </div>
       <div id="freshness"><span id="dot"></span><span id="updated">connecting</span></div>
     </div>
   </header>
@@ -342,11 +422,12 @@
 <script>
 const REFRESH_MS = 45_000;
 const TZ = "Australia/Melbourne";
-const WALK_MINUTES = 5;
+
+// Walk-filter minute stops the +/- buttons snap between. 0 means "off".
+const WALK_STOPS = [0, 3, 5, 8, 10, 15];
+const WALK_DEFAULT = 5;
 
 // ---- Portrait ("decision view") display tuning ----------------------------
-// Portrait is for "which service do I catch right now?", so it shows far
-// fewer rows than the ambient landscape board.
 const PORTRAIT = {
   trainPerGroup: 3,   // rows per direction group
   trainSingleList: 5, // fallback cap if a station has no split config
@@ -360,18 +441,13 @@ const PORTRAIT = {
 //   Exactly one side carries a regex test; the other side is the fallback.
 //   field: "destination" (default) or "route" - which value the regex tests.
 //   cityWard: "left" | "right" - which side is the citybound side, where that
-//   is meaningful. Portrait uses it to put the likely-wanted direction first
-//   (citybound before noon, outbound after).
+//   is meaningful. Portrait uses it to put the likely-wanted direction first.
 
-// Suburban stations: citybound trains' direction says "City (...)".
 const CITY_SPLIT = {
   left:  { label: "Outbound" },
   right: { label: "To City", test: /city|flinders/i },
   cityWard: "right",
 };
-
-// Metro Tunnel stations: through-running, so split by which end of the
-// tunnel the train is heading to.
 const TUNNEL_SPLIT_NORTH = {
   left:  { label: "To Sunbury", test: /sunbury/i },
   right: { label: "To City / Cranbourne / Pakenham", test: /city|cranbourne|pakenham/i },
@@ -382,14 +458,10 @@ const TUNNEL_SPLIT_SOUTH = {
   right: { label: "To Cranbourne / Pakenham", test: /cranbourne|pakenham/i },
   cityWard: "left",
 };
-
-// Southern Cross: cross-city (Werribee / Williamstown) vs everything else.
 const SX_SPLIT = {
   left:  { label: "Red / Yellow / Dark Blue" },
   right: { label: "Frankston / Cross-City", test: /sandringham|frankston|werribee|williamstown/i, field: "route" },
 };
-
-// Flinders St + Town Hall: loop lines vs cross-city + Metro Tunnel lines.
 const FLINDERS_SPLIT = {
   left:  { label: "Red / Yellow / Dark Blue" },
   right: {
@@ -398,14 +470,10 @@ const FLINDERS_SPLIT = {
     field: "route",
   },
 };
-
-// Melbourne Central + State Library: loop lines vs Metro Tunnel lines.
 const MC_SPLIT = {
   left:  { label: "Red / Yellow / Dark Blue" },
   right: { label: "Metro Tunnel & Frankston", test: /sunbury|pakenham|cranbourne|frankston/i, field: "route" },
 };
-
-// Flagstaff / Parliament: platform-side groups expressed as line groups.
 const NORTH_LOOP_SPLIT = {
   left:  { label: "Burnley / Craigieburn / Upfield" },
   right: { label: "Hurstbridge / Mernda / Frankston", test: /hurstbridge|mernda|frankston/i, field: "route" },
@@ -432,8 +500,6 @@ const STATIONS = {
   "werribee":          { label: "Werribee Station",                  split: CITY_SPLIT },
   "middle-footscray":  { label: "Middle Footscray",                  split: CITY_SPLIT },
   "west-footscray":    { label: "West Footscray",                    split: CITY_SPLIT },
-  // "north-richmond" removed until its real stop ID is confirmed in the
-  // Worker (it was sharing Middle Footscray's ID 1127).
   "hawksburn":         { label: "Hawksburn Station",                 split: CITY_SPLIT },
   "watergardens":      { label: "Watergardens Station",              split: CITY_SPLIT },
   "flemington-bridge": { label: "Flemington Bridge",                 split: CITY_SPLIT },
@@ -454,13 +520,17 @@ function saveSetting(key, value) {
 
 let currentStation = loadSetting("ptv-station", DEFAULT_STATION);
 if (!(currentStation in STATIONS)) currentStation = DEFAULT_STATION;
-let walkFilterOn = loadSetting("ptv-walk-filter", "on") === "on";
+
+// Walk filter is now a minute value (0 = off), cached like the station.
+let walkMinutes = parseInt(loadSetting("ptv-walk-minutes", String(WALK_DEFAULT)), 10);
+if (!Number.isFinite(walkMinutes) || walkMinutes < 0) walkMinutes = WALK_DEFAULT;
+
 let menuOpen = false;
-const expandedBuses = new Set(); // bus sections tapped open in portrait
+let stationQuery = "";       // text typed into the station search
+let trainCollapsed = false;  // portrait: train section collapsed?
+const expandedBuses = new Set();
 
 // Display rules per stop (landscape grid layout).
-// maxFill: generous cap in the grid layout, where available height decides
-//          the real count (overflowing rows are trimmed after render).
 const RULES = {
   "train":    { maxFill: 30 },
   "bus-city": { maxFill: 12 },
@@ -470,11 +540,9 @@ const DEFAULT_RULE = { maxFill: 12 };
 
 // The walk filter only applies to trains (your walk to the station).
 function hideWithinFor(stopKey) {
-  return stopKey === "train" && walkFilterOn ? WALK_MINUTES : 0;
+  return stopKey === "train" ? walkMinutes : 0;
 }
 
-// Official Melbourne line colours (via Wikipedia / PTV)
-// fg chosen for contrast: light backgrounds get dark text
 const LINE_COLORS = {
   "Alamein":      { bg: "#152C6B", fg: "#ffffff" },
   "Belgrave":     { bg: "#152C6B", fg: "#ffffff" },
@@ -500,7 +568,7 @@ function lineColor(routeName) {
   for (const [line, c] of Object.entries(LINE_COLORS)) {
     if (name.includes(line.toLowerCase())) return c;
   }
-  return null; // unknown line -> fall back to generic .badge.train blue
+  return null;
 }
 
 let lastPayload = null;
@@ -521,9 +589,6 @@ function minutesUntil(iso) {
   return Math.round((new Date(iso) - Date.now()) / 60000);
 }
 
-// Decide which column a departure belongs to for a given split config.
-// The side carrying a regex wins/loses on its match; the other side is
-// the fallback for everything else.
 function pickColumn(split, dep) {
   const valueFor = (side) =>
     (side.field === "route" ? dep.route : dep.destination) || "";
@@ -532,9 +597,6 @@ function pickColumn(split, dep) {
   return "left";
 }
 
-// Group order for the stacked portrait layout: where a citybound side is
-// defined, show it first before noon and second after noon. Line-group
-// splits (no cityWard) keep their configured order.
 function orderedSides(split) {
   if (!split || !split.cityWard) return ["left", "right"];
   const morning = new Date().getHours() < 12;
@@ -544,7 +606,20 @@ function orderedSides(split) {
   return first === "left" ? ["left", "right"] : ["right", "left"];
 }
 
-// Build one departure row element
+// Subsequence match: every char of query appears in order within the label.
+// e.g. "mc" matches "Melbourne Central", "Macaulay", "Jolimont-MCG".
+function subsequenceMatch(query, text) {
+  const q = query.toLowerCase().replace(/\s+/g, "");
+  if (!q) return true;
+  const t = text.toLowerCase();
+  let i = 0;
+  for (const ch of t) {
+    if (ch === q[i]) i++;
+    if (i === q.length) return true;
+  }
+  return i === q.length;
+}
+
 function buildRow(stopKey, dep) {
   const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
   const mins = minutesUntil(bestIso);
@@ -586,9 +661,6 @@ function buildRow(stopKey, dep) {
   return row;
 }
 
-// Remove trailing rows that don't fully fit inside their height-constrained
-// section. Only meaningful in the landscape grid layout, where sections have
-// a fixed height; portrait sections are capped by row count instead.
 function trimOverflow(isGrid) {
   if (!isGrid) return;
   document.querySelectorAll("#board section").forEach((section) => {
@@ -596,7 +668,7 @@ function trimOverflow(isGrid) {
     if (!rows) return;
     const isSplit = rows.classList.contains("split");
     const cols = isSplit ? [...rows.querySelectorAll(".col")] : null;
-    let guard = 80; // safety: never loop forever
+    let guard = 80;
     while (guard-- > 0 && section.scrollHeight > section.clientHeight) {
       if (isSplit) {
         let target = null;
@@ -616,18 +688,80 @@ function trimOverflow(isGrid) {
   });
 }
 
-// ---- Station picker menu ---------------------------------------------------
+// Shared: a right-side collapse chevron. `collapsed` sets the rotated state;
+// `onToggle` runs on click. Used by both train and bus headers so the
+// collapse affordance is identical and can't drift between the two.
+function makeCollapseButton(collapsed, onToggle) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "collapse-btn" + (collapsed ? " collapsed" : "");
+  btn.textContent = "▾";
+  btn.setAttribute("aria-label", collapsed ? "Expand" : "Collapse");
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    onToggle();
+  });
+  return btn;
+}
+
+// ---- Station picker menu (with search) -------------------------------------
 function buildStationMenu(section) {
   const menu = document.createElement("div");
   menu.className = "station-menu";
-  for (const [key, cfg] of Object.entries(STATIONS)) {
+  menu.addEventListener("click", (e) => e.stopPropagation());
+
+  const search = document.createElement("input");
+  search.className = "station-search";
+  search.type = "text";
+  search.placeholder = "Search stations";
+  search.value = stationQuery;
+  search.addEventListener("input", () => {
+    stationQuery = search.value;
+    refreshStationList(list);
+  });
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      const first = list.querySelector("button.opt");
+      if (first) first.click();
+    } else if (e.key === "Escape") {
+      menuOpen = false;
+      stationQuery = "";
+      render();
+    }
+  });
+
+  const list = document.createElement("div");
+  list.className = "station-list";
+
+  menu.append(search, list);
+  section.appendChild(menu);
+  refreshStationList(list);
+
+  // Autofocus so you can type immediately after opening
+  setTimeout(() => search.focus(), 0);
+}
+
+function refreshStationList(list) {
+  list.innerHTML = "";
+  const entries = Object.entries(STATIONS).filter(([, cfg]) =>
+    subsequenceMatch(stationQuery, cfg.label),
+  );
+  if (entries.length === 0) {
+    const note = document.createElement("div");
+    note.className = "no-match";
+    note.textContent = "No stations match.";
+    list.appendChild(note);
+    return;
+  }
+  for (const [key, cfg] of entries) {
     const btn = document.createElement("button");
     btn.type = "button";
+    btn.className = "opt" + (key === currentStation ? " active" : "");
     btn.textContent = cfg.label;
-    if (key === currentStation) btn.classList.add("active");
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       menuOpen = false;
+      stationQuery = "";
       if (key !== currentStation) {
         currentStation = key;
         saveSetting("ptv-station", key);
@@ -637,15 +771,15 @@ function buildStationMenu(section) {
         render();
       }
     });
-    menu.appendChild(btn);
+    list.appendChild(btn);
   }
-  section.appendChild(menu);
 }
 
 // Close the menu when tapping anywhere else
 document.addEventListener("click", () => {
   if (menuOpen) {
     menuOpen = false;
+    stationQuery = "";
     render();
   }
 });
@@ -659,7 +793,6 @@ function makeEmptyNote(text) {
   return div;
 }
 
-// Landscape grid: two side-by-side direction columns (original behaviour).
 function buildTrainGrid(section, stop, stationCfg) {
   const split = stationCfg.split;
   const cap = (RULES["train"] ?? DEFAULT_RULE).maxFill;
@@ -699,7 +832,7 @@ function buildTrainGrid(section, stop, stationCfg) {
   for (const dep of stop.departures) {
     if (shown >= cap) break;
     const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
-    if (minutesUntil(bestIso) < hideWithin) continue; // gone, or too soon
+    if (minutesUntil(bestIso) < hideWithin) continue;
 
     const row = buildRow("train", dep);
     if (split) {
@@ -720,8 +853,6 @@ function buildTrainGrid(section, stop, stationCfg) {
   }
 }
 
-// Portrait: direction groups stacked vertically, likely-wanted group first,
-// few rows per group. No scrolling should be needed.
 function buildTrainStacked(section, stop, stationCfg) {
   const split = stationCfg.split;
   const hideWithin = hideWithinFor("train");
@@ -781,7 +912,6 @@ function buildTrainStacked(section, stop, stationCfg) {
   }
 }
 
-// Landscape grid: full bus rows (original behaviour).
 function buildBusGrid(section, stop) {
   const cap = (RULES[stop.key] ?? DEFAULT_RULE).maxFill;
   const rowsWrap = document.createElement("div");
@@ -806,16 +936,11 @@ function buildBusGrid(section, stop) {
   if (shown === 0) rowsWrap.appendChild(makeEmptyNote("No catchable departures right now."));
 }
 
-// Portrait: bus section collapses to its header with the next times inline;
-// tapping toggles a short detailed list.
+// Portrait: bus section. Header shows the next times inline (when collapsed)
+// and a right-side collapse chevron matching the train header. The chevron
+// is the collapse control; tapping it toggles the detailed list.
 function buildBusPortrait(section, stop, h2) {
   const expanded = expandedBuses.has(stop.key);
-  h2.classList.add("bus-summary");
-  if (expanded) h2.classList.add("open");
-
-  const caret = document.createElement("span");
-  caret.className = "caret";
-  caret.textContent = "▾";
 
   const times = document.createElement("span");
   times.className = "h2-times";
@@ -836,14 +961,16 @@ function buildBusPortrait(section, stop, h2) {
       times.appendChild(chip);
     }
   }
-  h2.append(times, caret);
 
-  h2.addEventListener("click", (e) => {
-    e.stopPropagation();
+  // Collapsed = not expanded, so the chevron shows the rotated (collapsed)
+  // state when the section is closed.
+  const collapse = makeCollapseButton(!expanded, () => {
     if (expandedBuses.has(stop.key)) expandedBuses.delete(stop.key);
     else expandedBuses.add(stop.key);
     render();
   });
+
+  h2.append(times, collapse);
 
   if (!expanded) return;
 
@@ -868,8 +995,6 @@ function render() {
   const board = document.getElementById("board");
   board.innerHTML = "";
 
-  // Grid (landscape) = ambient board: height decides row counts.
-  // Stacked (portrait/desktop) = decision view: tight row caps, no scrolling.
   const isGrid = getComputedStyle(board).display === "grid";
   const stationCfg = STATIONS[currentStation] ?? STATIONS[DEFAULT_STATION];
 
@@ -877,9 +1002,14 @@ function render() {
     const isTrain = stop.key === "train";
 
     const section = document.createElement("section");
-    section.dataset.key = stop.key; // used by landscape grid areas
+    section.dataset.key = stop.key;
 
     const h2 = document.createElement("h2");
+
+    // The name area is its own element so the collapse chevron can sit apart.
+    const nameEl = document.createElement("span");
+    nameEl.className = "h2-name";
+
     if (isTrain) {
       h2.className = "picker";
       const nameSpan = document.createElement("span");
@@ -887,22 +1017,38 @@ function render() {
       const caret = document.createElement("span");
       caret.className = "caret";
       caret.textContent = "▾";
-      h2.append(nameSpan, caret);
-      h2.addEventListener("click", (e) => {
+      nameEl.append(nameSpan, caret);
+      // Tapping the station name opens the picker (not the collapse).
+      nameEl.addEventListener("click", (e) => {
         e.stopPropagation();
         menuOpen = !menuOpen;
+        if (!menuOpen) stationQuery = "";
         render();
       });
+      h2.appendChild(nameEl);
+
+      // Collapse chevron on the right (portrait affordance; hidden on wall board).
+      if (!isGrid) {
+        const collapse = makeCollapseButton(trainCollapsed, () => {
+          trainCollapsed = !trainCollapsed;
+          render();
+        });
+        h2.appendChild(collapse);
+      }
     } else {
       const labelSpan = document.createElement("span");
       labelSpan.textContent = stop.label;
-      h2.appendChild(labelSpan);
+      nameEl.appendChild(labelSpan);
+      h2.appendChild(nameEl);
     }
     section.appendChild(h2);
 
     if (isTrain) {
-      if (isGrid) buildTrainGrid(section, stop, stationCfg);
-      else buildTrainStacked(section, stop, stationCfg);
+      const showBody = isGrid || !trainCollapsed;
+      if (showBody) {
+        if (isGrid) buildTrainGrid(section, stop, stationCfg);
+        else buildTrainStacked(section, stop, stationCfg);
+      }
     } else {
       if (isGrid) buildBusGrid(section, stop);
       else buildBusPortrait(section, stop, h2);
@@ -913,24 +1059,61 @@ function render() {
   }
 
   trimOverflow(isGrid);
-  updateWalkToggle();
+  updateWalkUI();
 }
 
-// ---- Walk filter toggle ----------------------------------------------------
-function updateWalkToggle() {
-  const btn = document.getElementById("walk-toggle");
-  btn.textContent = walkFilterOn
-    ? "Walk filter: " + WALK_MINUTES + " min"
-    : "Walk filter: off";
-  btn.classList.toggle("on", walkFilterOn);
+// ---- Walk filter stepper ----------------------------------------------------
+function updateWalkUI() {
+  const wrap = document.getElementById("walk");
+  const label = document.getElementById("walk-label");
+  const on = walkMinutes > 0;
+  wrap.classList.toggle("on", on);
+  label.textContent = on ? "Walk " + walkMinutes + " min" : "Walk filter: off";
 }
-document.getElementById("walk-toggle").addEventListener("click", (e) => {
-  e.stopPropagation();
-  walkFilterOn = !walkFilterOn;
-  saveSetting("ptv-walk-filter", walkFilterOn ? "on" : "off");
+
+function setWalkMinutes(v) {
+  walkMinutes = Math.max(0, v);
+  saveSetting("ptv-walk-minutes", String(walkMinutes));
   render();
+}
+
+// +/- snap to the nearest stop in WALK_STOPS, so tapping cycles sensibly
+function nudgeWalk(dir) {
+  const stops = WALK_STOPS;
+  let idx = stops.indexOf(walkMinutes);
+  if (idx === -1) {
+    let nearest = 0, best = Infinity;
+    stops.forEach((s, i) => {
+      const d = Math.abs(s - walkMinutes);
+      if (d < best) { best = d; nearest = i; }
+    });
+    idx = nearest;
+  } else {
+    idx = Math.min(stops.length - 1, Math.max(0, idx + dir));
+  }
+  setWalkMinutes(stops[idx]);
+}
+
+document.getElementById("walk-minus").addEventListener("click", (e) => {
+  e.stopPropagation();
+  nudgeWalk(-1);
 });
-updateWalkToggle();
+document.getElementById("walk-plus").addEventListener("click", (e) => {
+  e.stopPropagation();
+  nudgeWalk(+1);
+});
+// Tapping the label toggles the filter off/on (remembers last value)
+let lastWalkValue = walkMinutes > 0 ? walkMinutes : WALK_DEFAULT;
+document.getElementById("walk-label").addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (walkMinutes > 0) {
+    lastWalkValue = walkMinutes;
+    setWalkMinutes(0);
+  } else {
+    setWalkMinutes(lastWalkValue);
+  }
+});
+updateWalkUI();
 
 async function refresh() {
   const dot = document.getElementById("dot");
@@ -950,11 +1133,8 @@ async function refresh() {
 
 refresh();
 setInterval(refresh, REFRESH_MS);
-// Re-render countdowns every 20s between fetches so minutes stay honest.
-// Skip while the station menu is open so it doesn't close mid-choice.
 setInterval(() => { if (!menuOpen) render(); }, 20_000);
 
-// Re-fit rows when the window size or orientation changes
 let resizeTimer = null;
 window.addEventListener("resize", () => {
   clearTimeout(resizeTimer);
@@ -968,7 +1148,7 @@ async function requestWakeLock() {
     if ("wakeLock" in navigator) {
       wakeLock = await navigator.wakeLock.request("screen");
     }
-  } catch (err) { /* not critical; fall back to OS auto-lock settings */ }
+  } catch (err) { /* not critical */ }
 }
 requestWakeLock();
 document.addEventListener("visibilitychange", () => {
