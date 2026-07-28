@@ -25,6 +25,216 @@
   </header>
   <main id="board"></main>
 
+<<<<<<< HEAD
+<script>
+const REFRESH_MS = 45_000;
+const TZ = "Australia/Melbourne";
+
+// Display rules per stop.
+// hideWithinMin: hide departures leaving sooner than this (your walk time).
+// maxShown: row cap in stacked (portrait) layout, where sections grow freely.
+// maxFill: generous cap in the grid layout, where available height decides
+//          the real count (overflowing rows are trimmed after render).
+const RULES = {
+  "train":    { hideWithinMin: 5, maxShown: 10, maxFill: 30 },
+  "bus-city": { hideWithinMin: 0, maxShown: 4,  maxFill: 12 },
+  "bus-west": { hideWithinMin: 0, maxShown: 4,  maxFill: 12 },
+};
+// Official Melbourne line colours (via Wikipedia / PTV)
+// fg chosen for contrast: light backgrounds get dark text
+const LINE_COLORS = {
+  "Alamein":      { bg: "#152C6B", fg: "#ffffff" },
+  "Belgrave":     { bg: "#152C6B", fg: "#ffffff" },
+  "Craigieburn":  { bg: "#FFBE00", fg: "#111111" },
+  "Cranbourne":   { bg: "#279FD5", fg: "#ffffff" },
+  "Flemington":   { bg: "#95979A", fg: "#111111" },
+  "Frankston":    { bg: "#028430", fg: "#ffffff" },
+  "Glen Waverley":{ bg: "#152C6B", fg: "#ffffff" },
+  "Hurstbridge":  { bg: "#BE1014", fg: "#ffffff" },
+  "Lilydale":     { bg: "#152C6B", fg: "#ffffff" },
+  "Mernda":       { bg: "#BE1014", fg: "#ffffff" },
+  "Pakenham":     { bg: "#279FD5", fg: "#ffffff" },
+  "Sandringham":  { bg: "#F178AF", fg: "#111111" },
+  "Stony Point":  { bg: "#028430", fg: "#ffffff" },
+  "Sunbury":      { bg: "#279FD5", fg: "#ffffff" },
+  "Upfield":      { bg: "#FFBE00", fg: "#111111" },
+  "Werribee":     { bg: "#F178AF", fg: "#111111" },
+  "Williamstown": { bg: "#F178AF", fg: "#111111" },
+};
+
+function lineColor(routeName) {
+  const name = (routeName || "").toLowerCase();
+  for (const [line, c] of Object.entries(LINE_COLORS)) {
+    if (name.includes(line.toLowerCase())) return c;
+  }
+  return null; // unknown line -> fall back to generic .badge.train blue
+}
+const DEFAULT_RULE = { hideWithinMin: 0, maxShown: 4, maxFill: 12 };
+
+let lastPayload = null;
+
+function melbTime(date) {
+  return new Intl.DateTimeFormat("en-AU", {
+    timeZone: TZ, hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(date);
+}
+
+function tickClock() {
+  document.getElementById("clock").textContent = melbTime(new Date());
+}
+setInterval(tickClock, 1000);
+tickClock();
+
+function minutesUntil(iso) {
+  return Math.round((new Date(iso) - Date.now()) / 60000);
+}
+
+// Remove trailing rows that don't fully fit inside their height-constrained
+// section. Only has an effect in the grid layout, where sections have a fixed
+// height; in the stacked layout sections grow to fit and nothing overflows.
+function trimOverflow() {
+  document.querySelectorAll("#board section").forEach((section) => {
+    const rows = section.querySelector(".rows");
+    if (!rows) return;
+    let guard = 60; // safety: never loop forever
+    while (
+      guard-- > 0 &&
+      rows.lastElementChild &&
+      section.scrollHeight > section.clientHeight
+    ) {
+      rows.lastElementChild.remove();
+    }
+  });
+}
+
+function render() {
+  if (!lastPayload) return;
+  const board = document.getElementById("board");
+  board.innerHTML = "";
+
+  // In the grid layout, height decides the row count, so use the generous cap.
+  const isGrid = getComputedStyle(board).display === "grid";
+
+  for (const stop of lastPayload.stops) {
+    const rule = RULES[stop.key] ?? DEFAULT_RULE;
+    const cap = isGrid ? rule.maxFill : rule.maxShown;
+
+    const section = document.createElement("section");
+    section.dataset.key = stop.key; // used by landscape grid areas
+    const h2 = document.createElement("h2");
+    h2.textContent = stop.label;
+    section.appendChild(h2);
+    const rowsWrap = document.createElement("div");
+    rowsWrap.className = "rows";
+    section.appendChild(rowsWrap);
+
+    if (stop.error) {
+      const div = document.createElement("div");
+      div.className = "error";
+      div.textContent = "Data unavailable. " + stop.error;
+      rowsWrap.appendChild(div);
+    } else {
+      let shown = 0;
+      for (const dep of stop.departures) {
+        if (shown >= cap) break;
+        const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
+        const mins = minutesUntil(bestIso);
+        if (mins < rule.hideWithinMin) continue; // gone, or too soon to catch
+
+        const row = document.createElement("div");
+        row.className = "row";
+
+        const badge = document.createElement("span");
+        badge.className = "badge " + (stop.key === "train" ? "train" : "bus");
+        badge.textContent = dep.route;
+        if (stop.key === "train") {
+          const c = lineColor(dep.route);
+          if (c) {
+            badge.style.background = c.bg;
+            badge.style.color = c.fg;
+          }
+        }
+
+        const dest = document.createElement("div");
+        dest.className = "dest";
+        const name = document.createElement("span");
+        name.className = "name";
+        name.textContent = dep.destination;
+        const meta = document.createElement("span");
+        meta.className = "meta";
+        const bits = [];
+        if (dep.platform) bits.push("Platform " + dep.platform);
+        bits.push(dep.estimatedUtc ? "Live" : "Scheduled");
+        bits.push(melbTime(new Date(bestIso)));
+        meta.textContent = bits.join(" \u00b7 ");
+        dest.append(name, meta);
+
+        const minsEl = document.createElement("div");
+        minsEl.className = "mins" + (mins <= rule.hideWithinMin + 1 ? " now" : "");
+        minsEl.innerHTML = mins +
+          "<small>min</small>";
+
+        row.append(badge, dest, minsEl);
+        rowsWrap.appendChild(row);
+        shown++;
+      }
+      if (shown === 0) {
+        const div = document.createElement("div");
+        div.className = "empty";
+        div.textContent = "No catchable departures right now.";
+        rowsWrap.appendChild(div);
+      }
+    }
+    board.appendChild(section);
+  }
+
+  trimOverflow();
+}
+
+async function refresh() {
+  const dot = document.getElementById("dot");
+  const updated = document.getElementById("updated");
+  try {
+    const res = await fetch("/api/board");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    lastPayload = await res.json();
+    dot.className = "";
+    updated.textContent = "Updated " + melbTime(new Date());
+  } catch (err) {
+    dot.className = "down";
+    updated.textContent = "connection lost";
+  }
+  render();
+}
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+// Re-render countdowns every 20s between fetches so minutes stay honest
+setInterval(render, 20_000);
+
+// Re-fit rows when the window size or orientation changes
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(render, 200);
+});
+
+// ---- Keep the screen awake on supported browsers (iOS 16.4+) ----
+let wakeLock = null;
+async function requestWakeLock() {
+  try {
+    if ("wakeLock" in navigator) {
+      wakeLock = await navigator.wakeLock.request("screen");
+    }
+  } catch (err) { /* not critical; fall back to OS auto-lock settings */ }
+}
+requestWakeLock();
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") requestWakeLock();
+});
+</script>
+=======
   <script src="/app.js"></script>
+>>>>>>> refs/remotes/origin/main
 </body>
 </html>
