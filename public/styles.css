@@ -56,7 +56,7 @@ header {
 #clock {
   font-family: var(--font-ui);
   font-weight: 600;
-  font-size: clamp(28px, 8vw, 44px);
+  font-size: clamp(20px, 3.2vw, 30px);
   letter-spacing: 0.01em;
   font-variant-numeric: tabular-nums;
 }
@@ -97,15 +97,14 @@ header {
   padding: 5px 8px;
 }
 #walk.on #walk-label { color: var(--live); }
-/* Hide the steppers when the filter is off, so it reads as a single chip */
-#walk:not(.on) .step { display: none; }
+#walk:not(.on) .step { color: var(--dim); }
 
 #freshness {
   display: flex;
   align-items: center;
   gap: 8px;
   color: var(--dim);
-  font-size: clamp(12px, 3.2vw, 15px);
+  font-size: clamp(11px, 3vw, 13px);
   font-weight: 500;
 }
 #dot {
@@ -145,7 +144,7 @@ section h2 {
   align-items: center;
   gap: 8px;
   font-family: var(--font-ui);
-  font-size: clamp(14px, 3.8vw, 18px);
+  font-size: clamp(12px, 3.5vw, 14px);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -170,7 +169,7 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
   background: none;
   border: none;
   color: var(--dim);
-  font-size: 15px;
+  font-size: 25px;
   cursor: pointer;
   padding: 4px 6px;
   line-height: 1;
@@ -314,7 +313,7 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
 }
 .dest .name {
   font-family: var(--font-display);
-  font-weight: 600;
+  font-weight: 700;
   font-size: clamp(16px, 4.6vw, 21px);
   white-space: nowrap;
   overflow: hidden;
@@ -331,7 +330,7 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
   font-family: var(--font-display);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  font-size: clamp(24px, 7.5vw, 36px);
+  font-size: clamp(20px, 5vw, 28px);
   color: var(--amber);
   text-align: right;
   line-height: 1;
@@ -339,8 +338,8 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
 .mins small {
   display: block;
   font-family: var(--font-ui);
-  font-size: clamp(10px, 2.6vw, 12px);
-  font-weight: 500;
+  font-size: clamp(7.5px, 1vw, 12px);
+  font-weight: 400;
   color: var(--dim);
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -386,7 +385,7 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
   .dest .name { font-size: 17px; }
   .dest .meta { font-size: 8px; }
   .mins { font-size: 19px; }
-  .mins small { font-size: 8px; }
+  .mins small { font-size: 6px; }
   .col h3 { font-size: 9px; padding: 4px 10px 3px; }
   /* the collapse control is a portrait affordance; hide on the wall board */
   .collapse-btn { display: none; }
