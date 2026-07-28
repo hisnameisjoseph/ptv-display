@@ -5,216 +5,27 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<title>Footscray Departures</title>
+<title>Melbourne Departures</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700&family=Barlow+Semi+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet" />
-<style>
-  :root {
-    --board: #000000;        /* night board */
-    --panel: #111111;
-    --ink: #f5f5f5;          /* off-white text */
-    --dim: #a7a7a7;          /* slate labels */
-    --amber: #ffb300;        /* PIDS countdown amber */
-    --live: #37c978;         /* realtime green */
-    --train: #2a6fb8;        /* metro-ish blue */
-    --bus: #e07020;          /* bus orange */
-    --rule: #2a2a2a;
-    --accent: #ffffff;
-  }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { height: 100%; }
-  body {
-    background: var(--board);
-    color: var(--ink);
-    font-family: "Barlow Semi Condensed", system-ui, sans-serif;
-    -webkit-font-smoothing: antialiased;
-    /* keep content clear of iPhone notch / home indicator */
-    padding: max(clamp(12px, 3vw, 28px), env(safe-area-inset-top))
-             max(clamp(12px, 3vw, 28px), env(safe-area-inset-right))
-             max(clamp(12px, 3vw, 28px), env(safe-area-inset-bottom))
-             max(clamp(12px, 3vw, 28px), env(safe-area-inset-left));
-    display: flex;
-    flex-direction: column;
-    gap: clamp(12px, 2.5vw, 22px);
-  }
-
-  /* Header: clock + freshness */
-  header {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
-  }
-  #clock {
-    font-family: "Archivo", sans-serif;
-    font-weight: 600;
-    font-size: clamp(28px, 8vw, 44px);
-    letter-spacing: 0.02em;
-    font-variant-numeric: tabular-nums;
-  }
-  #freshness {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--dim);
-    font-size: clamp(12px, 3.2vw, 15px);
-    font-weight: 500;
-  }
-  #dot {
-    width: 10px; height: 10px; border-radius: 50%;
-    background: var(--live);
-    animation: pulse 2.4s ease-in-out infinite;
-  }
-  #dot.stale { background: var(--amber); animation: none; }
-  #dot.down { background: #d9534f; animation: none; }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.35; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    #dot { animation: none; }
-  }
-
-  /* Board: stacked by default (portrait phone, desktop) */
-  #board {
-    display: flex;
-    flex-direction: column;
-    gap: clamp(12px, 2.5vw, 22px);
-    flex: 1;
-    min-height: 0;
-  }
-
-  /* Stop sections */
-  section {
-    background: var(--panel);
-    border: 1px solid var(--rule);
-    border-radius: 10px;
-    overflow: hidden;
-  }
-  section h2 {
-    font-size: clamp(14px, 3.8vw, 18px);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--dim);
-    padding: 10px 14px 8px;
-    border-bottom: 1px solid var(--rule);
-  }
-  .row {
-    display: grid;
-    grid-template-columns: auto 1fr auto;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 14px;
-    border-bottom: 1px solid var(--rule);
-  }
-  .rows > .row:last-child { border-bottom: none; }
-
-  .badge {
-    font-family: "Archivo", sans-serif;
-    font-weight: 600;
-    font-size: clamp(13px, 3.6vw, 16px);
-    padding: 3px 8px;
-    border-radius: 5px;
-    color: #fff;
-    min-width: 2.6em;
-    text-align: center;
-  }
-  .badge.train { background: var(--train); }
-  .badge.bus { background: var(--bus); }
-
-  .dest {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-  }
-  .dest .name {
-    font-weight: 600;
-    font-size: clamp(16px, 4.6vw, 21px);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .dest .meta {
-    color: var(--dim);
-    font-size: clamp(11px, 3vw, 13px);
-    font-weight: 500;
-  }
-
-  .mins {
-    font-family: "Archivo", sans-serif;
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-    font-size: clamp(24px, 7.5vw, 36px);
-    color: var(--amber);
-    text-align: right;
-    line-height: 1;
-  }
-  .mins small {
-    display: block;
-    font-family: "Barlow Semi Condensed", sans-serif;
-    font-size: clamp(10px, 2.6vw, 12px);
-    color: var(--dim);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    margin-top: 2px;
-  }
-  .mins.now { color: var(--live); }
-
-  .empty, .error {
-    padding: 14px;
-    color: var(--dim);
-    font-size: clamp(13px, 3.6vw, 15px);
-  }
-  .error { color: #d98380; }
-
-  /* ---- Landscape phone / small tablet: trains left, buses right ---- */
-  @media (orientation: landscape) and (max-width: 2532px) and (max-height: 1170px) {
-    body { gap: 10px; }
-    #clock { font-size: 16px; }
-    #freshness { font-size: 11px; }
-    #board {
-      display: grid;
-      grid-template-columns: 1.7fr 1fr;
-      grid-template-rows: 1fr 1fr;
-      grid-template-areas:
-        "train bus-city"
-        "train bus-west";
-      gap: 10px;
-    }
-    section { min-height: 0; }              /* let grid constrain height */
-    section[data-key="train"]    { grid-area: train; }
-    section[data-key="bus-city"] { grid-area: bus-city; }
-    section[data-key="bus-west"] { grid-area: bus-west; }
-
-    /* compact density so more rows fit */
-    section h2 { font-size: 12px; padding: 6px 10px 5px; }
-    .row { padding: 5px 10px; gap: 8px; }
-    .badge { font-size: 12px; padding: 2px 6px; }
-    .dest .name { font-size: 15px; }
-    .dest .meta { font-size: 9px; }
-    .mins { font-size: 18px; }
-    .mins small { font-size: 7px; }
-
-    /* trains flow into two columns */
-    section[data-key="train"] .rows {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-    }
-    section[data-key="train"] .row:nth-child(odd) {
-      border-right: 1px solid var(--rule);
-    }
-  }
-</style>
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <header>
     <div id="clock">--:--</div>
-    <div id="freshness"><span id="dot"></span><span id="updated">connecting</span></div>
+    <div id="header-right">
+      <div id="walk">
+        <button type="button" class="step" id="walk-minus" aria-label="Less walk time">&minus;</button>
+        <span id="walk-label">Walk filter</span>
+        <button type="button" class="step" id="walk-plus" aria-label="More walk time">+</button>
+      </div>
+      <div id="freshness"><span id="dot"></span><span id="updated">connecting</span></div>
+    </div>
   </header>
   <main id="board"></main>
 
+<<<<<<< HEAD
 <script>
 const REFRESH_MS = 45_000;
 const TZ = "Australia/Melbourne";
@@ -422,5 +233,8 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") requestWakeLock();
 });
 </script>
+=======
+  <script src="/app.js"></script>
+>>>>>>> refs/remotes/origin/main
 </body>
 </html>

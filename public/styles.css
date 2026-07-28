@@ -1,0 +1,393 @@
+:root {
+  --board: #000000;        /* night board */
+  --panel: #111111;
+  --ink: #f5f5f5;          /* off-white text */
+  --dim: #a7a7a7;          /* slate labels */
+  --amber: #ffb300;        /* PIDS countdown amber */
+  --live: #37c978;         /* realtime green */
+  --train: #2a6fb8;        /* metro-ish blue */
+  --bus: #e07020;          /* bus orange */
+  --rule: #2a2a2a;
+  --accent: #ffffff;
+
+  /* Two type roles:
+     --font-display : Public Sans, for badge / destination / countdown
+     --font-ui      : Inter, for meta, "min", labels, menu, clock */
+  --font-display: "Public Sans", system-ui, sans-serif;
+  --font-ui: "Inter", system-ui, sans-serif;
+
+  /* body padding, reused by the sticky header bleed */
+  --pad: clamp(12px, 3vw, 28px);
+  --pad-top: max(var(--pad), env(safe-area-inset-top));
+  --pad-right: max(var(--pad), env(safe-area-inset-right));
+  --pad-bottom: max(var(--pad), env(safe-area-inset-bottom));
+  --pad-left: max(var(--pad), env(safe-area-inset-left));
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  background: var(--board);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  -webkit-font-smoothing: antialiased;
+  /* keep content clear of iPhone notch / home indicator */
+  padding: var(--pad-top) var(--pad-right) var(--pad-bottom) var(--pad-left);
+  display: flex;
+  flex-direction: column;
+  gap: clamp(12px, 2.5vw, 22px);
+}
+
+/* Header: clock + walk filter + freshness.
+   Sticky so the clock and controls stay visible if the page scrolls;
+   negative margins bleed it over the body padding so rows slide
+   underneath it cleanly. */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: var(--board);
+  margin: calc(-1 * var(--pad-top)) calc(-1 * var(--pad-right)) 0 calc(-1 * var(--pad-left));
+  padding: var(--pad-top) var(--pad-right) 10px var(--pad-left);
+}
+#clock {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  font-size: clamp(28px, 8vw, 44px);
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}
+#header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Walk-filter stepper: label toggles off; minus/plus nudge the value. */
+#walk {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: #1a1a1a;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  overflow: hidden;
+}
+#walk.on { border-color: #2c4a38; }
+#walk button {
+  background: none;
+  border: none;
+  color: var(--dim);
+  font: inherit;
+  font-family: var(--font-ui);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 5px 9px;
+  line-height: 1;
+}
+#walk button:hover { color: var(--ink); }
+#walk .step { font-size: 15px; min-width: 26px; }
+#walk-label {
+  font-size: clamp(11px, 3vw, 13px);
+  font-weight: 500;
+  white-space: nowrap;
+  padding: 5px 8px;
+}
+#walk.on #walk-label { color: var(--live); }
+/* Hide the steppers when the filter is off, so it reads as a single chip */
+#walk:not(.on) .step { display: none; }
+
+#freshness {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--dim);
+  font-size: clamp(12px, 3.2vw, 15px);
+  font-weight: 500;
+}
+#dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--live);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+#dot.stale { background: var(--amber); animation: none; }
+#dot.down { background: #d9534f; animation: none; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #dot { animation: none; }
+}
+
+/* Board: stacked by default (portrait phone, desktop) */
+#board {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(12px, 2.5vw, 22px);
+  flex: 1;
+  min-height: 0;
+}
+
+/* Stop sections */
+section {
+  position: relative; /* anchors the station menu */
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  overflow: hidden;
+}
+section h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-ui);
+  font-size: clamp(14px, 3.8vw, 18px);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid var(--rule);
+}
+h2 .h2-name {
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+h2.picker .h2-name:hover { color: var(--ink); }
+h2 .caret { color: var(--dim); font-size: 0.85em; }
+
+/* Collapse chevron, right side of both train and bus headers (portrait) */
+.collapse-btn {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--dim);
+  font-size: 15px;
+  cursor: pointer;
+  padding: 4px 6px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+.collapse-btn:hover { color: var(--ink); }
+.collapse-btn.collapsed { transform: rotate(-90deg); }
+
+/* Comfortable touch targets on phones */
+@media (orientation: portrait) {
+  section h2 { min-height: 44px; }
+  #walk button, #walk-label { min-height: 34px; display: flex; align-items: center; }
+}
+
+/* Collapsed bus sections (portrait): next times shown inline in the header.
+   The times sit to the right, just before the collapse chevron. */
+.h2-times {
+  margin-left: auto;
+  display: flex;
+  gap: 12px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(13px, 3.6vw, 16px);
+  color: var(--amber);
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+}
+/* When the times are present, they take the auto margin, so the collapse
+   button shouldn't also push left. */
+.h2-times + .collapse-btn { margin-left: 10px; }
+.h2-times.none { color: var(--dim); font-family: var(--font-ui); font-weight: 500; }
+
+.station-menu {
+  position: absolute;
+  top: 38px;
+  left: 10px;
+  z-index: 50;
+  background: #1a1a1a;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  min-width: 260px;
+  max-height: min(64vh, 380px);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.65);
+  overflow: hidden;
+}
+.station-search {
+  border: none;
+  border-bottom: 1px solid var(--rule);
+  background: #222;
+  color: var(--ink);
+  font: inherit;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  padding: 10px 14px;
+  outline: none;
+}
+.station-search::placeholder { color: #6d6d6d; }
+.station-list { overflow-y: auto; }
+.station-menu button.opt {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 14px;
+  background: none;
+  border: none;
+  border-bottom: 1px solid #222;
+  color: var(--ink);
+  font: inherit;
+  font-family: var(--font-ui);
+  font-size: 14px;
+  cursor: pointer;
+}
+.station-menu button.opt:last-child { border-bottom: none; }
+.station-menu button.opt:hover,
+.station-menu button.opt.highlight { background: #262626; }
+.station-menu button.opt.active { color: var(--amber); }
+.station-menu .no-match {
+  padding: 12px 14px;
+  color: var(--dim);
+  font-size: 13px;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--rule);
+}
+.rows > .row:last-child,
+.col > .row:last-child { border-bottom: none; }
+
+/* Direction-split train columns (grid layout only) */
+.rows.split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: stretch;
+}
+.rows.split .col:first-child { border-right: 1px solid var(--rule); }
+.col h3 {
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  padding: 5px 10px 4px;
+  border-bottom: 1px solid var(--rule);
+}
+
+/* Direction-split train groups, stacked (portrait layout) */
+.rows.stacked-split .col h3 {
+  padding: 7px 14px 6px;
+}
+.rows.stacked-split .col:not(:first-child) h3 {
+  border-top: 1px solid var(--rule);
+}
+
+.badge {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(13px, 3.6vw, 16px);
+  padding: 3px 8px;
+  border-radius: 5px;
+  color: #fff;
+  min-width: 2.6em;
+  text-align: center;
+}
+.badge.train { background: var(--train); }
+.badge.bus { background: var(--bus); }
+
+.dest {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.dest .name {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: clamp(16px, 4.6vw, 21px);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dest .meta {
+  font-family: var(--font-ui);
+  color: var(--dim);
+  font-size: clamp(11px, 3vw, 13px);
+  font-weight: 400;
+}
+
+.mins {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(24px, 7.5vw, 36px);
+  color: var(--amber);
+  text-align: right;
+  line-height: 1;
+}
+.mins small {
+  display: block;
+  font-family: var(--font-ui);
+  font-size: clamp(10px, 2.6vw, 12px);
+  font-weight: 500;
+  color: var(--dim);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-top: 2px;
+}
+.mins.now { color: var(--live); }
+
+.empty, .error {
+  padding: 14px;
+  color: var(--dim);
+  font-size: clamp(13px, 3.6vw, 15px);
+}
+.error { color: #d98380; }
+
+/* ---- Wall-display layout: trains left, buses stacked right ----
+   Triggered by landscape orientation on a wide-enough viewport.
+   This is the "ambient board" mode (spare phone in landscape, or a
+   monitor). Portrait and narrow windows use the stacked decision view. */
+@media (orientation: landscape) and (min-width: 700px) {
+  body { gap: 10px; }
+  #clock { font-size: 16px; }
+  #freshness { font-size: 11px; }
+  #walk-label { font-size: 10px; }
+  #board {
+    display: grid;
+    grid-template-columns: 1.75fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    grid-template-areas:
+      "train bus-city"
+      "train bus-west";
+    gap: 10px;
+  }
+  section { min-height: 0; }              /* let grid constrain height */
+  section[data-key="train"]    { grid-area: train; }
+  section[data-key="bus-city"] { grid-area: bus-city; }
+  section[data-key="bus-west"] { grid-area: bus-west; }
+
+  /* compact density so more rows fit */
+  section h2 { font-size: 12px; padding: 6px 10px 5px; }
+  .station-menu { top: 30px; }
+  .row { padding: 5px 10px; gap: 8px; }
+  .badge { font-size: 12px; padding: 2px 6px; }
+  .dest .name { font-size: 17px; }
+  .dest .meta { font-size: 8px; }
+  .mins { font-size: 19px; }
+  .mins small { font-size: 8px; }
+  .col h3 { font-size: 9px; padding: 4px 10px 3px; }
+  /* the collapse control is a portrait affordance; hide on the wall board */
+  .collapse-btn { display: none; }
+}

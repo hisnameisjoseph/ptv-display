@@ -1,10 +1,11 @@
 {
-  "name": "ptv-board",
+  "name": "ptv-display",
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "build:frontend": "tsc -p tsconfig.frontend.json",
+    "dev": "npm run build:frontend && wrangler dev",
+    "deploy": "npm run build:frontend && wrangler deploy"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260717.1",
