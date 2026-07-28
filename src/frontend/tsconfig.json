@@ -6,9 +6,9 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "strict": true,
     "noEmitOnError": false,
-    "outDir": "./public",
-    "rootDir": "./src",
+    "outDir": "../../public",
+    "rootDir": ".",
     "types": []
   },
-  "include": ["src/app.ts"]
+  "include": ["app.ts"]
 }

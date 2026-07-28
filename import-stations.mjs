@@ -51,9 +51,11 @@ const SPECIAL_TYPES = {
   1068: "loop",              // Flagstaff
   1155: "loop",              // Parliament
   // Metro Tunnel
-  1236: "tunnel",            // Anzac
-  1233: "tunnel",            // Parkville
-  1232: "tunnel",            // Arden
+  1236: "tunnel_south",            // Anzac
+  1233: "tunnel_north",            // Parkville
+  1232: "tunnel_north",            // Arden
+
+  // Terminal stations
   1002: "terminus",          // Alamein
   1018: "terminus",          // Belgrave
   1044: "terminus",          // Craigieburn
@@ -173,7 +175,6 @@ async function main() {
 
   // ---- Build the SQL ----
   const lines = [];
-  lines.push("BEGIN TRANSACTION;");
   lines.push("DELETE FROM station_routes;");
   lines.push("DELETE FROM stations;");
   lines.push("DELETE FROM routes;");
@@ -200,8 +201,6 @@ async function main() {
       `INSERT INTO station_routes (stop_id, route_id) VALUES (${stopId}, ${routeId});`,
     );
   }
-
-  lines.push("COMMIT;");
 
   const sql = lines.join("\n");
   const tmpFile = "._import_stations.generated.sql";
