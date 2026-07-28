@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build:frontend": "tsc -p tsconfig.frontend.json",
+    "build:frontend": "tsc -p src/frontend/tsconfig.json",
     "dev": "npm run build:frontend && wrangler dev",
     "deploy": "npm run build:frontend && wrangler deploy"
   },

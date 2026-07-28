@@ -5,5 +5,14 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS"
-  }
+    
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "ptv-db",
+      "database_id": "51f9dcb5-22fb-4e2a-8c82-773e897581d9"
+    }
+  ]
+  
 }

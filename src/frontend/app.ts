@@ -2,7 +2,10 @@
  * Melbourne Departures - frontend
  *
  * Compiled to /public/app.js and loaded by index.html. All rendering happens
- * client-side from a single /api/board?station=<key> call to the Worker.
+ * client-side from a single /api/board?station=<stop_id> call to the Worker.
+ * The board response carries stationType directly, so train split logic
+ * needs no separate station lookup. The station picker (search menu) is
+ * populated from a one-time /api/stations fetch at startup.
  */
 
 // ---- Types ----------------------------------------------------------------
@@ -18,6 +21,7 @@ interface Departure {
 interface StopBoard {
   key: string;               // "train" | "bus-city" | "bus-west"
   label: string;
+  stationType?: string;      // train boards only; drives split logic
   stopName: string;
   departures: Departure[];
   error?: string;
@@ -25,8 +29,14 @@ interface StopBoard {
 
 interface BoardPayload {
   updatedUtc: string;
-  station: string;
+  station: number;
   stops: StopBoard[];
+}
+
+interface StationPickerEntry {
+  key: number;         // stop_id (lowest of the pair, for merged stations)
+  label: string;
+  stationType: string;
 }
 
 type SplitField = "destination" | "route";
@@ -43,14 +53,10 @@ interface SplitConfig {
   cityWard?: "left" | "right";
 }
 
-interface StationConfig {
-  label: string;
-  split: SplitConfig | null;
-}
-
 interface LineColor { bg: string; fg: string; }
 
 type ColumnSide = "left" | "right";
+type StationPickerState = "loading" | "loaded" | "error";
 
 // ---- Constants ------------------------------------------------------------
 
@@ -69,10 +75,15 @@ const PORTRAIT = {
   busExpandedRows: 4, // rows when a bus section is tapped open
 };
 
-// ---- Station registry (keys must match the Worker) ------------------------
-// split: null -> single chronological list.
-// split.left/right: exactly one side carries a regex test; the other is the
-//   fallback. field: "destination" (default) or "route".
+// Fallback when localStorage has no valid station, or the API sends
+// something we can't render. Matches the Worker's DEFAULT_STATION_STOP_ID.
+const DEFAULT_STATION_STOP_ID = 1072; // Footscray
+
+// ---- Split configs (display logic; keyed off station_type from the API) ---
+// split: null -> single chronological list (used for terminus stations,
+//   where almost everything is city-bound anyway).
+// left/right.test: exactly one side carries a regex; the other is fallback.
+// field: "destination" (default) or "route".
 // cityWard: which side is citybound, where meaningful; portrait shows the
 //   likely-wanted direction first.
 
@@ -112,33 +123,26 @@ const NORTH_LOOP_SPLIT: SplitConfig = {
   right: { label: "Hurstbridge / Mernda / Frankston", test: /hurstbridge|mernda|frankston/i, field: "route" },
 };
 
-const STATIONS: Record<string, StationConfig> = {
-  "footscray":         { label: "Footscray Station",                 split: CITY_SPLIT },
-  "flinders-street":   { label: "Flinders St / Town Hall",           split: FLINDERS_SPLIT },
-  "melbourne-central": { label: "Melbourne Central / State Library", split: MC_SPLIT },
-  "southern-cross":    { label: "Southern Cross Station",            split: SX_SPLIT },
-  "flagstaff":         { label: "Flagstaff Station",                 split: NORTH_LOOP_SPLIT },
-  "parliament":        { label: "Parliament Station",                split: NORTH_LOOP_SPLIT },
-  "anzac":             { label: "Anzac Station",                     split: TUNNEL_SPLIT_SOUTH },
-  "parkville":         { label: "Parkville Station",                 split: TUNNEL_SPLIT_NORTH },
-  "arden":             { label: "Arden Station",                     split: TUNNEL_SPLIT_NORTH },
-  "richmond":          { label: "Richmond Station",                  split: CITY_SPLIT },
-  "west-richmond":     { label: "West Richmond Station",             split: CITY_SPLIT },
-  "jolimont":          { label: "Jolimont-MCG Station",              split: CITY_SPLIT },
-  "south-yarra":       { label: "South Yarra Station",               split: CITY_SPLIT },
-  "caulfield":         { label: "Caulfield Station",                 split: CITY_SPLIT },
-  "newport":           { label: "Newport Station",                   split: CITY_SPLIT },
-  "yarraville":        { label: "Yarraville Station",                split: CITY_SPLIT },
-  "sunshine":          { label: "Sunshine Station",                  split: CITY_SPLIT },
-  "werribee":          { label: "Werribee Station",                  split: CITY_SPLIT },
-  "middle-footscray":  { label: "Middle Footscray",                  split: CITY_SPLIT },
-  "west-footscray":    { label: "West Footscray",                    split: CITY_SPLIT },
-  "hawksburn":         { label: "Hawksburn Station",                 split: CITY_SPLIT },
-  "watergardens":      { label: "Watergardens Station",              split: CITY_SPLIT },
-  "flemington-bridge": { label: "Flemington Bridge",                 split: CITY_SPLIT },
-  "macaulay":          { label: "Macaulay Station",                  split: CITY_SPLIT },
+// station_type (from D1) -> split config. This is the whole replacement for
+// the old 24-entry hardcoded STATIONS object.
+const STATION_TYPE_SPLIT: Record<string, SplitConfig | null> = {
+  through: CITY_SPLIT,
+  interchange: CITY_SPLIT,
+  terminus: null, // single list; nearly everything departing is city-bound
+  loop: NORTH_LOOP_SPLIT,
+  tunnel_north: TUNNEL_SPLIT_NORTH,
+  tunnel_south: TUNNEL_SPLIT_SOUTH,
+  flinders_street: FLINDERS_SPLIT,
+  southern_cross: SX_SPLIT,
+  melbourne_central: MC_SPLIT,
 };
-const DEFAULT_STATION = "footscray";
+
+function splitForType(stationType: string | undefined): SplitConfig | null {
+  if (!stationType) return null;
+  if (stationType in STATION_TYPE_SPLIT) return STATION_TYPE_SPLIT[stationType];
+  console.warn("Unmapped station_type from API: " + stationType);
+  return null;
+}
 
 const LINE_COLORS: Record<string, LineColor> = {
   "Alamein":      { bg: "#152C6B", fg: "#ffffff" },
@@ -206,8 +210,12 @@ function saveSetting(key: string, value: string): void {
 
 // ---- Mutable state --------------------------------------------------------
 
-let currentStation = loadSetting("ptv-station", DEFAULT_STATION);
-if (!(currentStation in STATIONS)) currentStation = DEFAULT_STATION;
+// stop_id of the currently selected train station. Old string-slug values
+// left over from before this migration (e.g. "footscray") will fail
+// parseInt and fall back to the default, which is a soft landing rather
+// than a crash.
+let currentStation = parseInt(loadSetting("ptv-station", String(DEFAULT_STATION_STOP_ID)), 10);
+if (!Number.isFinite(currentStation) || currentStation <= 0) currentStation = DEFAULT_STATION_STOP_ID;
 
 let walkMinutes = parseInt(loadSetting("ptv-walk-minutes", String(WALK_DEFAULT)), 10);
 if (!Number.isFinite(walkMinutes) || walkMinutes < 0) walkMinutes = WALK_DEFAULT;
@@ -218,6 +226,12 @@ let trainCollapsed = false;
 const expandedBuses = new Set<string>();
 
 let lastPayload: BoardPayload | null = null;
+
+// Station picker (search menu) data — fetched once at startup, independent
+// of the board refresh cycle.
+let stationPicker: StationPickerEntry[] = [];
+let stationPickerState: StationPickerState = "loading";
+let stationPickerError: string | null = null;
 
 // The walk filter only applies to trains (your walk to the station).
 function hideWithinFor(stopKey: string): number {
@@ -364,6 +378,25 @@ function trimOverflow(isGrid: boolean): void {
   });
 }
 
+// ---- Station picker: data loading -------------------------------------------
+
+async function loadStationPicker(): Promise<void> {
+  stationPickerState = "loading";
+  try {
+    const res = await fetch("/api/stations");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    stationPicker = (await res.json()) as StationPickerEntry[];
+    stationPickerState = "loaded";
+    stationPickerError = null;
+  } catch (err) {
+    stationPicker = [];
+    stationPickerError = err instanceof Error ? err.message : "failed to load stations";
+    stationPickerState = "error";
+  }
+  // Only worth a re-render if the menu is actually open and waiting on this.
+  if (menuOpen) render();
+}
+
 // ---- Station picker menu (with search) -------------------------------------
 
 function buildStationMenu(section: HTMLElement): void {
@@ -400,23 +433,41 @@ function buildStationMenu(section: HTMLElement): void {
 
 function refreshStationList(list: HTMLElement): void {
   list.innerHTML = "";
-  const entries = Object.entries(STATIONS).filter(([, cfg]) =>
-    subsequenceMatch(stationQuery, cfg.label),
-  );
+
+  if (stationPickerState === "loading") {
+    list.appendChild(el("div", "no-match", "Loading stations\u2026"));
+    return;
+  }
+
+  if (stationPickerState === "error") {
+    list.appendChild(
+      el("div", "error", "Couldn't load station list. " + (stationPickerError ?? "")),
+    );
+    const retry = el("button", "opt", "Retry");
+    retry.type = "button";
+    retry.addEventListener("click", (e) => {
+      e.stopPropagation();
+      loadStationPicker().then(() => refreshStationList(list));
+    });
+    list.appendChild(retry);
+    return;
+  }
+
+  const entries = stationPicker.filter((s) => subsequenceMatch(stationQuery, s.label));
   if (entries.length === 0) {
     list.appendChild(el("div", "no-match", "No stations match."));
     return;
   }
-  for (const [key, cfg] of entries) {
-    const btn = el("button", "opt" + (key === currentStation ? " active" : ""), cfg.label);
+  for (const s of entries) {
+    const btn = el("button", "opt" + (s.key === currentStation ? " active" : ""), s.label);
     btn.type = "button";
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       menuOpen = false;
       stationQuery = "";
-      if (key !== currentStation) {
-        currentStation = key;
-        saveSetting("ptv-station", key);
+      if (s.key !== currentStation) {
+        currentStation = s.key;
+        saveSetting("ptv-station", String(s.key));
         must("updated").textContent = "loading";
         refresh();
       } else {
@@ -438,8 +489,7 @@ document.addEventListener("click", () => {
 
 // ---- Section builders ------------------------------------------------------
 
-function buildTrainGrid(section: HTMLElement, stop: StopBoard, stationCfg: StationConfig): void {
-  const split = stationCfg.split;
+function buildTrainGrid(section: HTMLElement, stop: StopBoard, split: SplitConfig | null): void {
   const cap = (RULES["train"] ?? DEFAULT_RULE).maxFill;
   const hideWithin = hideWithinFor("train");
 
@@ -484,8 +534,7 @@ function buildTrainGrid(section: HTMLElement, stop: StopBoard, stationCfg: Stati
   }
 }
 
-function buildTrainStacked(section: HTMLElement, stop: StopBoard, stationCfg: StationConfig): void {
-  const split = stationCfg.split;
+function buildTrainStacked(section: HTMLElement, stop: StopBoard, split: SplitConfig | null): void {
   const hideWithin = hideWithinFor("train");
 
   const rowsWrap = el("div", "rows" + (split ? " stacked-split" : ""));
@@ -608,7 +657,6 @@ function render(): void {
   board.innerHTML = "";
 
   const isGrid = getComputedStyle(board).display === "grid";
-  const stationCfg = STATIONS[currentStation] ?? STATIONS[DEFAULT_STATION];
 
   for (const stop of lastPayload.stops) {
     const isTrain = stop.key === "train";
@@ -621,7 +669,7 @@ function render(): void {
 
     if (isTrain) {
       h2.className = "picker";
-      nameEl.append(el("span", undefined, stationCfg.label), el("span", "caret", "\u25be"));
+      nameEl.append(el("span", undefined, stop.label), el("span", "caret", "\u25be"));
       nameEl.addEventListener("click", (e) => {
         e.stopPropagation();
         menuOpen = !menuOpen;
@@ -645,8 +693,9 @@ function render(): void {
     if (isTrain) {
       const showBody = isGrid || !trainCollapsed;
       if (showBody) {
-        if (isGrid) buildTrainGrid(section, stop, stationCfg);
-        else buildTrainStacked(section, stop, stationCfg);
+        const split = splitForType(stop.stationType);
+        if (isGrid) buildTrainGrid(section, stop, split);
+        else buildTrainStacked(section, stop, split);
       }
     } else {
       if (isGrid) buildBusGrid(section, stop);
@@ -702,7 +751,7 @@ async function refresh(): Promise<void> {
   const dot = must("dot");
   const updated = must("updated");
   try {
-    const res = await fetch("/api/board?station=" + encodeURIComponent(currentStation));
+    const res = await fetch("/api/board?station=" + encodeURIComponent(String(currentStation)));
     if (!res.ok) throw new Error("HTTP " + res.status);
     lastPayload = (await res.json()) as BoardPayload;
     dot.className = "";
@@ -752,6 +801,9 @@ function init(): void {
   });
   updateWalkUI();
 
+  // Board and station-picker fetches are independent: the board renders
+  // as soon as it's back, without waiting on the picker list.
+  loadStationPicker();
   refresh();
   setInterval(refresh, REFRESH_MS);
   setInterval(() => { if (!menuOpen) render(); }, 20_000);
