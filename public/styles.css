@@ -322,7 +322,7 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
 .dest .meta {
   font-family: var(--font-ui);
   color: var(--dim);
-  font-size: clamp(11px, 3vw, 13px);
+  font-size: clamp(10px, 2.5vw, 11px);
   font-weight: 400;
 }
 
@@ -330,7 +330,7 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
   font-family: var(--font-display);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  font-size: clamp(20px, 5vw, 28px);
+  font-size: clamp(16px, 4.6vw, 21px);
   color: var(--amber);
   text-align: right;
   line-height: 1;
@@ -338,7 +338,7 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
 .mins small {
   display: block;
   font-family: var(--font-ui);
-  font-size: clamp(7.5px, 1vw, 12px);
+  font-size: clamp(10px, 2.5vw, 11px);
   font-weight: 400;
   color: var(--dim);
   letter-spacing: 0.06em;
