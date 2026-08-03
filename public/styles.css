@@ -255,6 +255,20 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
   color: var(--dim);
   font-size: 13px;
 }
+/* Route numbers shown beside a bus stop name in the picker */
+.station-menu button.opt {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.station-menu .opt-routes {
+  margin-left: auto;
+  color: var(--dim);
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
 
 .row {
   display: grid;
@@ -368,14 +382,14 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
     grid-template-columns: 1.75fr 1fr;
     grid-template-rows: 1fr 1fr;
     grid-template-areas:
-      "train bus-city"
-      "train bus-west";
+      "train bus-1"
+      "train bus-2";
     gap: 10px;
   }
   section { min-height: 0; }              /* let grid constrain height */
   section[data-key="train"]    { grid-area: train; }
-  section[data-key="bus-city"] { grid-area: bus-city; }
-  section[data-key="bus-west"] { grid-area: bus-west; }
+  section[data-key="bus-1"] { grid-area: bus-1; }
+  section[data-key="bus-2"] { grid-area: bus-2; }
 
   /* compact density so more rows fit */
   section h2 { font-size: 12px; padding: 6px 10px 5px; }

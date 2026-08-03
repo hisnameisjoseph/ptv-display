@@ -2,14 +2,18 @@
  * PTV Departures Board - Cloudflare Worker
  *
  * Endpoints:
- *   GET /api/board?station=<stop_id>  -> departures for the chosen train
- *                                        station (by stop_id) plus the fixed
- *                                        Footscray bus stops. Defaults to
- *                                        Footscray (1072) if missing/invalid.
+ *   GET /api/board?station=<stop_id>&bus1=<stop_id>&bus2=<stop_id>
+ *                                     -> departures for the chosen train
+ *                                        station plus two bus stops. All
+ *                                        params optional; each falls back to
+ *                                        a default.
  *   GET /api/stations                 -> picker-ready list of all metro
  *                                        stations, with flinders_street and
  *                                        melbourne_central pairs merged into
  *                                        a single entry each.
+ *   GET /api/stops/search?q=<term>    -> up to 20 metro bus stops matching
+ *                                        the term as a subsequence, ranked
+ *                                        prefix > substring > subsequence.
  *   (static dashboard is served from /public via the assets binding)
  *
  * Secrets (set with `wrangler secret put`):
@@ -27,19 +31,26 @@ export interface Env {
 const PTV_BASE = "https://timetableapi.ptv.vic.gov.au";
 const CACHE_SECONDS = 45; // protect PTV rate limits; clients can poll freely
 const TRAIN_MAX_RESULTS = 16; // per stop, per route+direction (PTV semantics)
+const BUS_MAX_RESULTS = 5;
 
-// Fallback when the station query param is missing or unparsable.
+// Fallback when a station query param is missing or unparsable.
 const DEFAULT_STATION_STOP_ID = 1072; // Footscray
+
+// Bus slots. The keys are stable slot identifiers, NOT descriptions of a
+// particular stop - the CSS grid and the frontend both key off them, while
+// the stop behind each slot is user-configurable.
+const BUS_SLOTS = [
+  { key: "bus-1", defaultStopId: 19740 },
+  { key: "bus-2", defaultStopId: 20796 },
+] as const;
 
 // station_types whose stop_ids are physically paired and should have their
 // departures merged into a single board (see schema.sql).
 const MERGE_TYPES = new Set(["flinders_street", "melbourne_central"]);
 
-// ---- Fixed bus stops (always included, independent of chosen station) -----
-const BUS_STOPS = [
-  { key: "bus-city", label: "Bus - City / Inner North", stopId: 19740, routeType: 2, maxResults: 5 },
-  { key: "bus-west", label: "Bus - Footscray / Sunshine", stopId: 20796, routeType: 2, maxResults: 5 },
-] as const;
+// Bus stop search tuning. Must match MIN_SEARCH_CHARS in the frontend.
+const MIN_SEARCH_CHARS = 3;
+const SEARCH_MAX_RESULTS = 20;
 
 // ---- PTV request signing (HMAC-SHA1, uppercase hex) -----------------------
 async function signedUrl(pathWithQuery: string, env: Env): Promise<string> {
@@ -80,6 +91,7 @@ interface StopBoard {
   key: string;
   label: string;
   stationType?: string; // train boards only; drives frontend split logic
+  stopId?: number; // bus boards only; lets the frontend mark the active pick
   stopName: string; // as reported by PTV, for sanity checking
   departures: Departure[];
   error?: string;
@@ -95,6 +107,12 @@ function byBestTime(a: Departure, b: Departure): number {
   const ta = new Date(a.estimatedUtc ?? a.scheduledUtc).getTime();
   const tb = new Date(b.estimatedUtc ?? b.scheduledUtc).getTime();
   return ta - tb;
+}
+
+function parseStopId(raw: string | null): number | null {
+  if (raw === null) return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 // ---- Fetch departures for one physical stop -------------------------------
@@ -187,15 +205,56 @@ async function fetchStation(stopId: number, env: Env): Promise<StopBoard> {
   };
 }
 
-// ---- Bus stop --------------------------------------------------------------
-async function fetchBus(stop: (typeof BUS_STOPS)[number], env: Env): Promise<StopBoard> {
-  const r = await fetchDepartures(stop.stopId, stop.routeType, stop.maxResults, env);
+// ---- Bus stops -------------------------------------------------------------
+// One D1 round trip for both slot labels, rather than one per slot.
+async function busLabels(stopIds: number[], env: Env): Promise<Map<number, string>> {
+  const unique = [...new Set(stopIds)];
+  const placeholders = unique.map(() => "?").join(", ");
+  try {
+    const { results } = await env.DB.prepare(
+      `SELECT stop_id, name FROM bus_stops WHERE stop_id IN (${placeholders})`,
+    ).bind(...unique).all<{ stop_id: number; name: string }>();
+    return new Map(results.map((r) => [r.stop_id, r.name]));
+  } catch {
+    // bus_stops may not exist yet (import not run). Fall back to PTV names.
+    return new Map();
+  }
+}
+
+async function fetchBus(
+  key: string,
+  stopId: number,
+  labels: Map<number, string>,
+  env: Env,
+): Promise<StopBoard> {
+  const r = await fetchDepartures(stopId, 2, BUS_MAX_RESULTS, env);
   return {
-    key: stop.key,
-    label: stop.label,
+    key,
+    // Prefer our own imported name; fall back to whatever PTV reported.
+    label: labels.get(stopId) ?? r.stopName ?? `Stop ${stopId}`,
+    stopId,
     stopName: r.stopName,
     departures: r.departures.sort(byBestTime),
     ...(r.error ? { error: r.error } : {}),
+  };
+}
+
+// ---- Bus stop search -------------------------------------------------------
+// Mirrors the frontend's subsequenceMatch: every character of the query must
+// appear in order within the name. In SQL that is LIKE '%m%c%'. Each
+// character is escaped individually before the wildcards are interleaved, so
+// a literal % or _ typed by the user cannot widen the match.
+function buildLikePatterns(compact: string): {
+  subsequence: string;
+  prefix: string;
+  contains: string;
+} {
+  const esc = (s: string) => s.replace(/[\\%_]/g, (c) => "\\" + c);
+  const chars = [...compact].map(esc);
+  return {
+    subsequence: "%" + chars.join("%") + "%",
+    prefix: esc(compact) + "%",
+    contains: "%" + esc(compact) + "%",
   };
 }
 
@@ -204,6 +263,12 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*", // future Pi / e-ink clients welcome
   "Access-Control-Allow-Methods": "GET, OPTIONS",
 };
+
+function json(body: unknown, extraHeaders: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(body), {
+    headers: { "Content-Type": "application/json", ...CORS_HEADERS, ...extraHeaders },
+  });
+}
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -246,27 +311,78 @@ export default {
         }),
       ].sort((a, b) => a.label.localeCompare(b.label));
 
-      return new Response(JSON.stringify(picker), {
-        headers: { "Content-Type": "application/json", ...CORS_HEADERS },
-      });
+      return json(picker);
     }
 
-    // ---- GET /api/board -> departures for a specific train station ----------
-    if (url.pathname === "/api/board") {
-      const stationParam = url.searchParams.get("station");
-      const parsedId = stationParam !== null ? Number(stationParam) : NaN;
-      const stopId = Number.isInteger(parsedId) && parsedId > 0 ? parsedId : DEFAULT_STATION_STOP_ID;
+    // ---- GET /api/stops/search -> metro bus stops matching a term -----------
+    if (url.pathname === "/api/stops/search") {
+      const compact = (url.searchParams.get("q") ?? "").replace(/\s+/g, "");
+      if (compact.length < MIN_SEARCH_CHARS) return json([]);
 
-      // Edge cache per station: many clients on one station share one PTV call
-      const cacheKey = new Request(`${url.origin}/api/board?station=${stopId}`);
+      const { subsequence, prefix, contains } = buildLikePatterns(compact);
+
+      // Ranking matters: with 3 characters, a bare subsequence match returns
+      // a lot of noise. Prefix matches first, then substring, then the rest.
+      const { results } = await env.DB.prepare(
+        `SELECT s.stop_id,
+                s.name,
+                s.suburb,
+                (SELECT group_concat(DISTINCT r.number)
+                   FROM bus_stop_routes bsr
+                   JOIN routes r ON r.route_id = bsr.route_id
+                  WHERE bsr.stop_id = s.stop_id
+                    AND r.number IS NOT NULL
+                    AND r.number != '') AS route_numbers
+           FROM bus_stops s
+          WHERE s.name LIKE ? ESCAPE '\\'
+          ORDER BY CASE
+                     WHEN s.name LIKE ? ESCAPE '\\' THEN 0
+                     WHEN s.name LIKE ? ESCAPE '\\' THEN 1
+                     ELSE 2
+                   END,
+                   s.name
+          LIMIT ${SEARCH_MAX_RESULTS}`,
+      )
+        .bind(subsequence, prefix, contains)
+        .all<{ stop_id: number; name: string; suburb: string | null; route_numbers: string | null }>();
+
+      // Strip PTV's route objects down to just the numbers the picker shows.
+      const slim = results.map((r) => ({
+        stopId: r.stop_id,
+        label: r.name,
+        suburb: r.suburb,
+        routes: (r.route_numbers ?? "")
+          .split(",")
+          .map((n) => n.trim())
+          .filter(Boolean)
+          .sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
+      }));
+
+      return json(slim);
+    }
+
+    // ---- GET /api/board -> departures for a train station + two bus stops ---
+    if (url.pathname === "/api/board") {
+      const stopId = parseStopId(url.searchParams.get("station")) ?? DEFAULT_STATION_STOP_ID;
+      const busIds = BUS_SLOTS.map(
+        (slot, i) => parseStopId(url.searchParams.get(`bus${i + 1}`)) ?? slot.defaultStopId,
+      );
+
+      // Edge cache per unique combination. Many clients on the same setup
+      // share one set of PTV calls; different setups simply cache separately.
+      const cacheKey = new Request(
+        `${url.origin}/api/board?station=${stopId}&bus1=${busIds[0]}&bus2=${busIds[1]}`,
+      );
       const cache = caches.default;
 
       const cached = await cache.match(cacheKey);
       if (cached) return cached;
 
+      const labels = await busLabels(busIds, env);
+
       const [train, ...buses] = await Promise.all([
         fetchStation(stopId, env),
-        ...BUS_STOPS.map((s) => fetchBus(s, env)),
+        ...BUS_SLOTS.map((slot, i) => fetchBus(slot.key, busIds[i], labels, env)),
       ]);
 
       const body = JSON.stringify({
