@@ -65,7 +65,7 @@ Browser  ──►  Cloudflare Worker  ──►  PTV Timetable API v3
 
 **Request signing in the Workers runtime.** PTV requires an HMAC-SHA1 signature over the request path. Workers do not run Node, so this uses the Web Crypto API's `SubtleCrypto` rather than Node's `crypto` module.
 
-**Database-driven display logic.** Direction-splitting started as a hardcoded per-station config, which does not scale past a handful of stations. It is now driven by a `station_type` column with nine values (`through`, `interchange`, `terminus`, `loop`, `tunnel_north`, `tunnel_south`, and three CBD specials). Adding a station is a database row, not a code change. Terminus stations render as a single list rather than an empty second column.
+**Database-driven display logic.** Direction-splitting started as a hardcoded per-station config, which does not scale past a handful of stations. It is now driven by a `station_type` column with nine values (`through`, `interchange`, `terminus`, `loop`, `tunnel_north`, `tunnel_south`, and three CBD city loop specials). Adding a station is a database row, not a code change. Terminus stations render as a single list rather than an empty second column.
 
 **Edge caching as rate-limit protection.** The Worker caches each board configuration for 45 seconds. Client refresh frequency is decoupled from upstream API usage, which is what makes the free-tier constraint hold: many viewers on the same configuration collapse into one PTV call.
 
