@@ -177,7 +177,7 @@ async function main() {
   const lines = [];
   lines.push("DELETE FROM station_routes;");
   lines.push("DELETE FROM stations;");
-  lines.push("DELETE FROM routes;");
+  lines.push("DELETE FROM routes WHERE route_type = 0;");
 
   for (const [routeId, r] of routes) {
     lines.push(

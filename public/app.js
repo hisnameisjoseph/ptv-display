@@ -3,10 +3,15 @@
  * Melbourne Departures - frontend
  *
  * Compiled to /public/app.js and loaded by index.html. All rendering happens
- * client-side from a single /api/board?station=<stop_id> call to the Worker.
- * The board response carries stationType directly, so train split logic
- * needs no separate station lookup. The station picker (search menu) is
- * populated from a one-time /api/stations fetch at startup.
+ * client-side from a single /api/board call to the Worker.
+ *
+ * Train stations: the board response carries stationType, which drives the
+ * direction-split layout. The picker list is fetched once from /api/stations.
+ *
+ * Bus stops: one stop_id is one pole is one direction, so buses need no split
+ * logic. There are two slots, each independently configurable. The picker
+ * queries /api/stops/search as you type rather than preloading, because the
+ * metro bus network has far too many stops to ship to the client.
  */
 // ---- Constants ------------------------------------------------------------
 const REFRESH_MS = 45_000;
@@ -21,9 +26,17 @@ const PORTRAIT = {
     busSummaryTimes: 2, // departure times shown inline in a collapsed bus header
     busExpandedRows: 4, // rows when a bus section is tapped open
 };
-// Fallback when localStorage has no valid station, or the API sends
-// something we can't render. Matches the Worker's DEFAULT_STATION_STOP_ID.
+// Fallbacks. These match the Worker's own defaults, so a fresh device and a
+// cold Worker agree on what to show before the user picks anything.
 const DEFAULT_STATION_STOP_ID = 1072; // Footscray
+const BUS_SLOTS = [
+    { key: "bus-1", storageKey: "ptv-bus-1", defaultStopId: 19740 },
+    { key: "bus-2", storageKey: "ptv-bus-2", defaultStopId: 20796 },
+];
+// Bus search tuning. MIN_SEARCH_CHARS must match the Worker.
+const MIN_SEARCH_CHARS = 3;
+const BUS_SEARCH_DEBOUNCE_MS = 500;
+const BUS_ROUTES_SHOWN = 5; // then "+N"
 // ---- Split configs (display logic; keyed off station_type from the API) ---
 // split: null -> single chronological list (used for terminus stations,
 //   where almost everything is city-bound anyway).
@@ -66,8 +79,7 @@ const NORTH_LOOP_SPLIT = {
     left: { label: "Burnley / Craigieburn / Upfield" },
     right: { label: "Hurstbridge / Mernda / Frankston", test: /hurstbridge|mernda|frankston/i, field: "route" },
 };
-// station_type (from D1) -> split config. This is the whole replacement for
-// the old 24-entry hardcoded STATIONS object.
+// station_type (from D1) -> split config.
 const STATION_TYPE_SPLIT = {
     through: CITY_SPLIT,
     interchange: CITY_SPLIT,
@@ -108,8 +120,8 @@ const LINE_COLORS = {
 };
 const RULES = {
     "train": { maxFill: 30 },
-    "bus-city": { maxFill: 12 },
-    "bus-west": { maxFill: 12 },
+    "bus-1": { maxFill: 12 },
+    "bus-2": { maxFill: 12 },
 };
 const DEFAULT_RULE = { maxFill: 12 };
 // ---- Small DOM helpers (typed) --------------------------------------------
@@ -145,14 +157,20 @@ function saveSetting(key, value) {
         /* private mode etc. */
     }
 }
+function loadStopId(key, fallback) {
+    const n = parseInt(loadSetting(key, String(fallback)), 10);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+}
 // ---- Mutable state --------------------------------------------------------
 // stop_id of the currently selected train station. Old string-slug values
-// left over from before this migration (e.g. "footscray") will fail
-// parseInt and fall back to the default, which is a soft landing rather
-// than a crash.
-let currentStation = parseInt(loadSetting("ptv-station", String(DEFAULT_STATION_STOP_ID)), 10);
-if (!Number.isFinite(currentStation) || currentStation <= 0)
-    currentStation = DEFAULT_STATION_STOP_ID;
+// left over from before the stop_id migration will fail parseInt and fall
+// back to the default, which is a soft landing rather than a crash.
+let currentStation = loadStopId("ptv-station", DEFAULT_STATION_STOP_ID);
+// stop_id per bus slot, keyed by slot key ("bus-1" / "bus-2").
+const busSelection = {};
+for (const slot of BUS_SLOTS) {
+    busSelection[slot.key] = loadStopId(slot.storageKey, slot.defaultStopId);
+}
 let walkMinutes = parseInt(loadSetting("ptv-walk-minutes", String(WALK_DEFAULT)), 10);
 if (!Number.isFinite(walkMinutes) || walkMinutes < 0)
     walkMinutes = WALK_DEFAULT;
@@ -161,14 +179,32 @@ let stationQuery = "";
 let trainCollapsed = false;
 const expandedBuses = new Set();
 let lastPayload = null;
-// Station picker (search menu) data — fetched once at startup, independent
+// Station picker (search menu) data - fetched once at startup, independent
 // of the board refresh cycle.
 let stationPicker = [];
 let stationPickerState = "loading";
 let stationPickerError = null;
+// Bus picker state. Only one bus menu can be open at a time; busMenuSlot
+// holds its slot key, or null when closed.
+let busMenuSlot = null;
+let busQuery = "";
+let busResults = [];
+let busSearchState = "idle";
+let busSearchError = null;
+let busDebounceTimer;
+let busRequestSeq = 0; // guards against a slow response overwriting a newer one
+let busListEl = null; // updated in place, so typing keeps focus
 // The walk filter only applies to trains (your walk to the station).
 function hideWithinFor(stopKey) {
     return stopKey === "train" ? walkMinutes : 0;
+}
+function anyMenuOpen() {
+    return menuOpen || busMenuSlot !== null;
+}
+function closeAllMenus() {
+    menuOpen = false;
+    stationQuery = "";
+    closeBusMenu();
 }
 // ---- Time helpers ---------------------------------------------------------
 function melbTime(date) {
@@ -210,6 +246,7 @@ function orderedSides(split) {
 }
 // Subsequence match: every char of query appears in order within the label.
 // e.g. "mc" matches "Melbourne Central", "Macaulay", "Jolimont-MCG".
+// The bus search does the equivalent in SQL, so the two pickers behave alike.
 function subsequenceMatch(query, text) {
     const q = query.toLowerCase().replace(/\s+/g, "");
     if (!q)
@@ -230,9 +267,10 @@ function buildRow(stopKey, dep) {
     const mins = minutesUntil(bestIso);
     const hideWithin = hideWithinFor(stopKey);
     const row = el("div", "row");
-    const badge = el("span", "badge " + (stopKey === "train" ? "train" : "bus"));
-    badge.textContent = stopKey === "train" ? dep.route.charAt(0) : dep.route;
-    if (stopKey === "train") {
+    const isTrain = stopKey === "train";
+    const badge = el("span", "badge " + (isTrain ? "train" : "bus"));
+    badge.textContent = isTrain ? dep.route.charAt(0) : dep.route;
+    if (isTrain) {
         const c = lineColor(dep.route);
         if (c) {
             badge.style.background = c.bg;
@@ -262,7 +300,7 @@ function makeEmptyNote(text) {
 function makeCollapseButton(collapsed, onToggle) {
     const btn = el("button", "collapse-btn" + (collapsed ? " collapsed" : ""));
     btn.type = "button";
-    btn.textContent = "\u25be"; // ▾
+    btn.textContent = "\u25be"; // down chevron
     btn.setAttribute("aria-label", collapsed ? "Expand" : "Collapse");
     btn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -321,7 +359,6 @@ async function loadStationPicker() {
         stationPickerError = err instanceof Error ? err.message : "failed to load stations";
         stationPickerState = "error";
     }
-    // Only worth a re-render if the menu is actually open and waiting on this.
     if (menuOpen)
         render();
 }
@@ -362,8 +399,8 @@ function refreshStationList(list) {
         return;
     }
     if (stationPickerState === "error") {
-        list.appendChild(el("div", "error", "Couldn't load station list. " + (stationPickerError ?? "")));
-        const retry = el("button", "opt", "Retry");
+        list.appendChild(el("div", "error", "Couldn't load the station list. " + (stationPickerError ?? "")));
+        const retry = el("button", "opt", "Try again");
         retry.type = "button";
         retry.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -397,11 +434,154 @@ function refreshStationList(list) {
         list.appendChild(btn);
     }
 }
-// Close the menu when tapping anywhere else
+// ---- Bus picker: search ------------------------------------------------------
+function closeBusMenu() {
+    busMenuSlot = null;
+    busQuery = "";
+    busResults = [];
+    busSearchState = "idle";
+    busSearchError = null;
+    busListEl = null;
+    if (busDebounceTimer !== undefined) {
+        clearTimeout(busDebounceTimer);
+        busDebounceTimer = undefined;
+    }
+}
+async function runBusSearch(term) {
+    const seq = ++busRequestSeq;
+    busSearchState = "loading";
+    paintBusList();
+    try {
+        const res = await fetch("/api/stops/search?q=" + encodeURIComponent(term));
+        if (!res.ok)
+            throw new Error("HTTP " + res.status);
+        const data = (await res.json());
+        if (seq !== busRequestSeq)
+            return; // a newer search already won
+        busResults = data;
+        busSearchState = "loaded";
+        busSearchError = null;
+    }
+    catch (err) {
+        if (seq !== busRequestSeq)
+            return;
+        busResults = [];
+        busSearchError = err instanceof Error ? err.message : "search failed";
+        busSearchState = "error";
+    }
+    paintBusList();
+}
+function scheduleBusSearch() {
+    if (busDebounceTimer !== undefined)
+        clearTimeout(busDebounceTimer);
+    const term = busQuery.replace(/\s+/g, "");
+    if (term.length < MIN_SEARCH_CHARS) {
+        busRequestSeq++; // cancel any in-flight result
+        busResults = [];
+        busSearchState = "idle";
+        paintBusList();
+        return;
+    }
+    busDebounceTimer = window.setTimeout(() => {
+        busDebounceTimer = undefined;
+        runBusSearch(busQuery.trim());
+    }, BUS_SEARCH_DEBOUNCE_MS);
+}
+// Repaints only the results list, never the whole board, so the input keeps
+// focus and the caret position while results stream in.
+function paintBusList() {
+    const list = busListEl;
+    if (!list || !list.isConnected)
+        return;
+    list.innerHTML = "";
+    if (busSearchState === "idle") {
+        list.appendChild(el("div", "no-match", `Type at least ${MIN_SEARCH_CHARS} characters to search.`));
+        return;
+    }
+    if (busSearchState === "loading") {
+        list.appendChild(el("div", "no-match", "Searching\u2026"));
+        return;
+    }
+    if (busSearchState === "error") {
+        list.appendChild(el("div", "error", "Search failed. " + (busSearchError ?? "")));
+        const retry = el("button", "opt", "Try again");
+        retry.type = "button";
+        retry.addEventListener("click", (e) => {
+            e.stopPropagation();
+            runBusSearch(busQuery.trim());
+        });
+        list.appendChild(retry);
+        return;
+    }
+    if (busResults.length === 0) {
+        list.appendChild(el("div", "no-match", "No bus stops match."));
+        return;
+    }
+    const slotKey = busMenuSlot;
+    const activeStopId = slotKey ? busSelection[slotKey] : -1;
+    for (const stop of busResults) {
+        const btn = el("button", "opt" + (stop.stopId === activeStopId ? " active" : ""));
+        btn.type = "button";
+        btn.appendChild(el("span", undefined, stop.label));
+        // Route numbers inline, in the dimmer meta treatment used on rows.
+        if (stop.routes.length > 0) {
+            const shown = stop.routes.slice(0, BUS_ROUTES_SHOWN).join(", ");
+            const extra = stop.routes.length - BUS_ROUTES_SHOWN;
+            btn.appendChild(el("span", "opt-routes", shown + (extra > 0 ? ` +${extra}` : "")));
+        }
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if (!slotKey)
+                return;
+            const changed = busSelection[slotKey] !== stop.stopId;
+            const slot = BUS_SLOTS.find((s) => s.key === slotKey);
+            closeBusMenu();
+            if (changed && slot) {
+                busSelection[slotKey] = stop.stopId;
+                saveSetting(slot.storageKey, String(stop.stopId));
+                must("updated").textContent = "loading";
+                refresh();
+            }
+            else {
+                render();
+            }
+        });
+        list.appendChild(btn);
+    }
+}
+function buildBusMenu(section) {
+    const menu = el("div", "station-menu");
+    menu.addEventListener("click", (e) => e.stopPropagation());
+    const search = el("input", "station-search");
+    search.type = "text";
+    search.placeholder = "Search bus stops";
+    search.value = busQuery;
+    search.addEventListener("input", () => {
+        busQuery = search.value;
+        scheduleBusSearch();
+    });
+    search.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+            const first = list.querySelector("button.opt");
+            if (first)
+                first.click();
+        }
+        else if (e.key === "Escape") {
+            closeBusMenu();
+            render();
+        }
+    });
+    const list = el("div", "station-list");
+    busListEl = list;
+    menu.append(search, list);
+    section.appendChild(menu);
+    paintBusList();
+    setTimeout(() => search.focus(), 0);
+}
+// Close any open menu when tapping elsewhere.
 document.addEventListener("click", () => {
-    if (menuOpen) {
-        menuOpen = false;
-        stationQuery = "";
+    if (anyMenuOpen()) {
+        closeAllMenus();
         render();
     }
 });
@@ -568,34 +748,37 @@ function render() {
         return;
     const board = must("board");
     board.innerHTML = "";
+    busListEl = null; // the old list node is about to be discarded
     const isGrid = getComputedStyle(board).display === "grid";
     for (const stop of lastPayload.stops) {
         const isTrain = stop.key === "train";
         const section = el("section");
         section.dataset.key = stop.key;
-        const h2 = el("h2");
+        const h2 = el("h2", "picker");
         const nameEl = el("span", "h2-name");
-        if (isTrain) {
-            h2.className = "picker";
-            nameEl.append(el("span", undefined, stop.label), el("span", "caret", "\u25be"));
-            nameEl.addEventListener("click", (e) => {
-                e.stopPropagation();
-                menuOpen = !menuOpen;
-                if (!menuOpen)
-                    stationQuery = "";
-                render();
-            });
-            h2.appendChild(nameEl);
-            if (!isGrid) {
-                h2.appendChild(makeCollapseButton(trainCollapsed, () => {
-                    trainCollapsed = !trainCollapsed;
-                    render();
-                }));
+        // Both train and bus headers are pickers now; only the menu differs.
+        nameEl.append(el("span", undefined, stop.label), el("span", "caret", "\u25be"));
+        nameEl.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if (isTrain) {
+                const wasOpen = menuOpen;
+                closeAllMenus();
+                menuOpen = !wasOpen;
             }
-        }
-        else {
-            nameEl.appendChild(el("span", undefined, stop.label));
-            h2.appendChild(nameEl);
+            else {
+                const wasOpen = busMenuSlot === stop.key;
+                closeAllMenus();
+                if (!wasOpen)
+                    busMenuSlot = stop.key;
+            }
+            render();
+        });
+        h2.appendChild(nameEl);
+        if (isTrain && !isGrid) {
+            h2.appendChild(makeCollapseButton(trainCollapsed, () => {
+                trainCollapsed = !trainCollapsed;
+                render();
+            }));
         }
         section.appendChild(h2);
         if (isTrain) {
@@ -616,6 +799,8 @@ function render() {
         }
         if (isTrain && menuOpen)
             buildStationMenu(section);
+        if (!isTrain && busMenuSlot === stop.key)
+            buildBusMenu(section);
         board.appendChild(section);
     }
     trimOverflow(isGrid);
@@ -656,11 +841,18 @@ function nudgeWalk(dir) {
 }
 let lastWalkValue = walkMinutes > 0 ? walkMinutes : WALK_DEFAULT;
 // ---- Data fetch -----------------------------------------------------------
+function boardUrl() {
+    const params = new URLSearchParams({ station: String(currentStation) });
+    BUS_SLOTS.forEach((slot, i) => {
+        params.set(`bus${i + 1}`, String(busSelection[slot.key]));
+    });
+    return "/api/board?" + params.toString();
+}
 async function refresh() {
     const dot = must("dot");
     const updated = must("updated");
     try {
-        const res = await fetch("/api/board?station=" + encodeURIComponent(String(currentStation)));
+        const res = await fetch(boardUrl());
         if (!res.ok)
             throw new Error("HTTP " + res.status);
         lastPayload = (await res.json());
@@ -713,12 +905,12 @@ function init() {
     loadStationPicker();
     refresh();
     setInterval(refresh, REFRESH_MS);
-    setInterval(() => { if (!menuOpen)
+    setInterval(() => { if (!anyMenuOpen())
         render(); }, 20_000);
     let resizeTimer;
     window.addEventListener("resize", () => {
         clearTimeout(resizeTimer);
-        resizeTimer = window.setTimeout(() => { if (!menuOpen)
+        resizeTimer = window.setTimeout(() => { if (!anyMenuOpen())
             render(); }, 200);
     });
     requestWakeLock();
