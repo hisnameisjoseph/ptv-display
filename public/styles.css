@@ -396,9 +396,9 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
   .station-menu { top: 30px; }
   .row { padding: 5px 10px; gap: 8px; }
   .badge { font-size: 12px; padding: 2px 6px; }
-  .dest .name { font-size: 17px; }
+  .dest .name { font-size: 16px; }
   .dest .meta { font-size: 8px; }
-  .mins { font-size: 19px; }
+  .mins { font-size: 18px; }
   .mins small { font-size: 6px; }
   .col h3 { font-size: 9px; padding: 4px 10px 3px; }
   /* the collapse control is a portrait affordance; hide on the wall board */
