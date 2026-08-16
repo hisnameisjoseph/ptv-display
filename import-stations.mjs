@@ -34,8 +34,9 @@ if (!DEV_ID || !API_KEY) {
 // Metro route_ids you provided (route_type 0). Names are filled from the API
 // where available; this list is the seed set the importer loops over.
 const METRO_ROUTE_IDS = [
-  1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17, 1482
+  1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14, 15, 16, 17
 ];
+// remove route 1482 (flemington racecourse line) temporarily as the service is not provided via api currently
 
 // ---- Hand-labelled classification (wins over auto-detection) ---------------
 // Metro Tunnel + underground loop stations aren't distinguishable from the
