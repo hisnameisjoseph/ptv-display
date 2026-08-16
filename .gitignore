@@ -1,3 +1,5 @@
 node_modules/
 .wrangler/
 .dev.vars
+._import_stations.generated.sql
+._import_bus_stops.generated.sql
