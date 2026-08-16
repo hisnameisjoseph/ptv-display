@@ -242,6 +242,30 @@ const LINE_COLORS: Record<string, LineColor> = {
 // real available height. Keyed by mode now rather than by fixed slot name.
 const MAX_FILL: Record<CardMode, number> = { train: 30, bus: 12 };
 
+// ---- Density -------------------------------------------------------------
+// How much a card shows is a function of how big the card actually is, not of
+// which way the device is held. A card is measured, given a density tier, and
+// the stylesheet sheds metadata accordingly - the type size never shrinks to
+// make something fit.
+
+type Density = "comfortable" | "compact" | "glance";
+
+// Below this width a two-column direction split gets too cramped to read, so
+// the columns stack instead. Calibrated against the point where a long
+// destination like "Glen Waverley" starts to ellipsize.
+const SPLIT_MIN_WIDTH = 460;
+
+const DENSITY_MIN = {
+  comfortable: { w: 620, h: 340 },
+  compact: { w: 260, h: 120 },
+};
+
+function densityFor(w: number, h: number): Density {
+  if (w >= DENSITY_MIN.comfortable.w && h >= DENSITY_MIN.comfortable.h) return "comfortable";
+  if (w >= DENSITY_MIN.compact.w && h >= DENSITY_MIN.compact.h) return "compact";
+  return "glance";
+}
+
 // ---- Small DOM helpers (typed) --------------------------------------------
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -399,6 +423,12 @@ for (const card of cards) {
 
 let lastPayload: BoardPayload | null = null;
 
+// Measured card geometry, keyed by card id. The observer keeps this current so
+// the next render already knows how wide each card will be, rather than
+// guessing from the viewport.
+const cardSize = new Map<string, { w: number; h: number }>();
+let reflowQueued = false;
+
 // Station picker (search menu) data - fetched once at startup, independent
 // of the board refresh cycle.
 let stationPicker: StationPickerEntry[] = [];
@@ -482,6 +512,54 @@ function legacySlotFor(card: Card, index: number): string {
   }
   return `bus-${busIndex + 1}`;
 }
+
+/**
+ * Side-by-side direction columns, or stacked with the labels as dividers?
+ * Driven by the card's measured width, so the same card renders correctly at
+ * any size in any orientation. Before the first measurement, fall back to the
+ * board being in grid mode, which is the pre-cards behaviour.
+ */
+function splitSideBySide(card: Card, isGrid: boolean): boolean {
+  const size = cardSize.get(card.id);
+  if (!size) return isGrid;
+  return size.w >= SPLIT_MIN_WIDTH;
+}
+
+// Watches every card and keeps its density attribute current. Density is a
+// pure CSS concern, so most size changes need no re-render at all; only
+// crossing the split threshold changes the DOM, and that schedules one pass.
+const cardObserver = new ResizeObserver((entries) => {
+  let splitFlipped = false;
+
+  for (const entry of entries) {
+    const section = entry.target as HTMLElement;
+    // A rebuild detaches the old sections, and the observer reports those as
+    // 0x0 on their way out. Measuring that would overwrite a good reading with
+    // zeros and bounce the split state, so skip anything already discarded.
+    if (!section.isConnected) continue;
+    const id = section.dataset.cardId;
+    if (!id) continue;
+
+    const w = entry.contentRect.width;
+    const h = entry.contentRect.height;
+    const prev = cardSize.get(id);
+    cardSize.set(id, { w, h });
+
+    section.dataset.density = densityFor(w, h);
+
+    const wasSplit = prev ? prev.w >= SPLIT_MIN_WIDTH : null;
+    if (wasSplit !== null && wasSplit !== (w >= SPLIT_MIN_WIDTH)) splitFlipped = true;
+    if (prev === undefined) splitFlipped = true; // first measurement
+  }
+
+  if (splitFlipped && !reflowQueued && !anyMenuOpen()) {
+    reflowQueued = true;
+    requestAnimationFrame(() => {
+      reflowQueued = false;
+      render();
+    });
+  }
+});
 
 function anyMenuOpen(): boolean {
   return stationMenuCardId !== null || busMenuCardId !== null;
@@ -588,12 +666,12 @@ function buildRow(card: Card, dep: Departure): HTMLDivElement {
 
   const dest = el("div", "dest");
   const name = el("span", "name", dep.destination);
+  // Each fact is its own element so the stylesheet can drop the ones a small
+  // card has no room for, rather than the row being rebuilt at every size.
   const meta = el("span", "meta");
-  const bits: string[] = [];
-  if (dep.platform) bits.push("Platform " + dep.platform);
-  bits.push(dep.estimatedUtc ? "Live" : "Scheduled");
-  bits.push(melbTime(new Date(bestIso)));
-  meta.textContent = bits.join(" · ");
+  if (dep.platform) meta.appendChild(el("span", "meta-platform", "Platform " + dep.platform));
+  meta.appendChild(el("span", "meta-live", dep.estimatedUtc ? "Live" : "Scheduled"));
+  meta.appendChild(el("span", "meta-time", melbTime(new Date(bestIso))));
   dest.append(name, meta);
 
   const minsEl = el("div", "mins" + (mins <= hideWithin + 1 ? " now" : ""));
@@ -905,10 +983,11 @@ function buildTrainGrid(
   card: Card,
   stop: StopBoard,
   split: SplitConfig | null,
+  sideBySide: boolean,
 ): void {
   const cap = MAX_FILL.train;
 
-  const rowsWrap = el("div", "rows" + (split ? " split" : ""));
+  const rowsWrap = el("div", "rows" + (split ? (sideBySide ? " split" : " stacked-split") : ""));
   section.appendChild(rowsWrap);
 
   let colLeft: HTMLElement | null = null;
@@ -950,8 +1029,9 @@ function buildTrainStacked(
   card: Card,
   stop: StopBoard,
   split: SplitConfig | null,
+  sideBySide: boolean,
 ): void {
-  const rowsWrap = el("div", "rows" + (split ? " stacked-split" : ""));
+  const rowsWrap = el("div", "rows" + (split ? (sideBySide ? " split" : " stacked-split") : ""));
   section.appendChild(rowsWrap);
 
   if (stop.error) {
@@ -1060,6 +1140,9 @@ function buildBusPortrait(
 function render(): void {
   if (!lastPayload) return;
   const board = must("board");
+  // Stop watching the sections about to be thrown away; the fresh ones are
+  // observed again as they are appended.
+  cardObserver.disconnect();
   board.innerHTML = "";
   busListEl = null; // the old list node is about to be discarded
 
@@ -1074,6 +1157,8 @@ function render(): void {
     const section = el("section");
     section.dataset.key = legacySlotFor(card, index);
     section.dataset.cardId = card.id;
+    const known = cardSize.get(card.id);
+    if (known) section.dataset.density = densityFor(known.w, known.h);
 
     const h2 = el("h2", "picker");
     const nameEl = el("span", "h2-name");
@@ -1106,8 +1191,11 @@ function render(): void {
       const showBody = isGrid || !isCollapsed(card);
       if (showBody) {
         const split = splitForType(stop.stationType);
-        if (isGrid) buildTrainGrid(section, card, stop, split);
-        else buildTrainStacked(section, card, stop, split);
+        // Height-constrained cards fill and get trimmed; free-flowing ones use
+        // a fixed cap. Whether the columns sit side by side is a separate,
+        // width-driven question.
+        if (isGrid) buildTrainGrid(section, card, stop, split, splitSideBySide(card, isGrid));
+        else buildTrainStacked(section, card, stop, split, splitSideBySide(card, isGrid));
       }
     } else {
       if (isGrid) buildBusGrid(section, card, stop);
@@ -1118,6 +1206,7 @@ function render(): void {
     if (!isTrain && busMenuCardId === card.id) buildBusMenu(section);
 
     board.appendChild(section);
+    cardObserver.observe(section);
   });
 
   trimOverflow(isGrid);

@@ -131,20 +131,74 @@ header {
   min-height: 0;
 }
 
-/* Stop sections */
+/* Stop sections.
+
+   Every card carries a density tier, set from its measured size by the
+   ResizeObserver in app.ts. The tier picks a fixed set of point sizes and
+   decides which metadata survives - a small card sheds facts and rows, it
+   never shrinks the type to squeeze more in. */
 section {
+  /* comfortable: the full treatment */
+  --name-size: 21px;
+  --meta-size: 11px;
+  --mins-size: 21px;
+  --mins-unit-size: 11px;
+  --badge-size: 16px;
+  --row-pad-y: 10px;
+  --row-pad-x: 14px;
+  --row-gap: 12px;
+  --h2-size: 14px;
+  --colh-size: 11px;
+
   position: relative; /* anchors the station menu */
   background: var(--panel);
   border: 1px solid var(--rule);
   border-radius: 10px;
   overflow: hidden;
 }
+section[data-density="compact"] {
+  --name-size: 16px;
+  --meta-size: 9px;
+  --mins-size: 17px;
+  --mins-unit-size: 8px;
+  --badge-size: 12px;
+  --row-pad-y: 6px;
+  --row-pad-x: 10px;
+  --row-gap: 8px;
+  --h2-size: 12px;
+  --colh-size: 9px;
+}
+section[data-density="glance"] {
+  --name-size: 15px;
+  --meta-size: 9px;
+  --mins-size: 16px;
+  --mins-unit-size: 8px;
+  --badge-size: 11px;
+  --row-pad-y: 5px;
+  --row-pad-x: 9px;
+  --row-gap: 8px;
+  --h2-size: 11px;
+  --colh-size: 9px;
+}
+
+/* Metadata is shed tier by tier. Platform goes first: on a small card the
+   line colour, destination and countdown carry the decision on their own.
+   The second rule matters as much as the first - dropping the platform
+   promotes the next fact to first place, so its leading separator has to go
+   with it. Both selectors are deliberately specific enough to beat the
+   generic separator rule further down. */
+section[data-density="compact"] .dest .meta > .meta-platform,
+section[data-density="glance"] .dest .meta > .meta-platform { display: none; }
+section[data-density="compact"] .dest .meta > .meta-platform + .meta-live::before,
+section[data-density="glance"] .dest .meta > .meta-platform + .meta-live::before { content: none; }
+section[data-density="glance"] .dest .meta { display: none; }
+
 section h2 {
   display: flex;
   align-items: center;
   gap: 8px;
   font-family: var(--font-ui);
-  font-size: clamp(12px, 3.5vw, 14px);
+  font-size: var(--h2-size);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -274,8 +328,8 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
+  gap: var(--row-gap);
+  padding: var(--row-pad-y) var(--row-pad-x);
   border-bottom: 1px solid var(--rule);
 }
 .rows > .row:last-child,
@@ -336,9 +390,20 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
 .dest .meta {
   font-family: var(--font-ui);
   color: var(--dim);
-  font-size: clamp(10px, 2.5vw, 11px);
+  font-size: var(--meta-size);
   font-weight: 400;
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
 }
+/* Facts are separate elements so density can drop one without rebuilding the
+   row; the separator rides on each item after the first. */
+.dest .meta > span + span::before {
+  content: "·";
+  margin: 0 0.42em;
+  color: var(--rule);
+}
+.dest .meta > span { white-space: nowrap; }
 
 .mins {
   font-family: var(--font-display);
@@ -392,15 +457,11 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
   section[data-key="bus-2"] { grid-area: bus-2; }
 
   /* compact density so more rows fit */
-  section h2 { font-size: 12px; padding: 6px 10px 5px; }
+  /* Point sizes come from the card's density tier, not from the viewport, so
+     this block is purely about layout now. */
+  section h2 { padding: 6px 10px 5px; }
   .station-menu { top: 30px; }
-  .row { padding: 5px 10px; gap: 8px; }
-  .badge { font-size: 12px; padding: 2px 6px; }
-  .dest .name { font-size: 15px; }
-  .dest .meta { font-size: 8px; }
-  .mins { font-size: 17px; }
-  .mins small { font-size: 6px; }
-  .col h3 { font-size: 9px; padding: 4px 10px 3px; }
+  .col h3 { padding: 4px 10px 3px; }
   /* the collapse control is a portrait affordance; hide on the wall board */
   .collapse-btn { display: none; }
 }
