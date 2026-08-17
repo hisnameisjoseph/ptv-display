@@ -147,7 +147,7 @@ const MAX_FILL = { train: 30, bus: 12 };
 const SPLIT_MIN_WIDTH = 460;
 const DENSITY_MIN = {
     comfortable: { w: 620, h: 340 },
-    compact: { w: 260, h: 120 },
+    compact: { w: 260, h: 200 },
 };
 function densityFor(w, h) {
     if (w >= DENSITY_MIN.comfortable.w && h >= DENSITY_MIN.comfortable.h)

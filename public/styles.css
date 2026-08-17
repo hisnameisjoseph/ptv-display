@@ -191,7 +191,9 @@ section[data-density="compact"] .dest .meta > .meta-platform,
 section[data-density="glance"] .dest .meta > .meta-platform { display: none; }
 section[data-density="compact"] .dest .meta > .meta-platform + .meta-live::before,
 section[data-density="glance"] .dest .meta > .meta-platform + .meta-live::before { content: none; }
-section[data-density="glance"] .dest .meta { display: none; }
+/* At glance the countdown's unit label, not the destination, is what sets the
+   row height - dropping it is what actually buys back a row. */
+section[data-density="glance"] .mins small { display: none; }
 
 section h2 {
   display: flex;
@@ -344,7 +346,7 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
 .rows.split .col:first-child { border-right: 1px solid var(--rule); }
 .col h3 {
   font-family: var(--font-ui);
-  font-size: 11px;
+  font-size: var(--colh-size);
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -364,7 +366,7 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
 .badge {
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: clamp(13px, 3.6vw, 16px);
+  font-size: var(--badge-size);
   padding: 3px 8px;
   border-radius: 5px;
   color: #fff;
@@ -382,7 +384,7 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
 .dest .name {
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: clamp(16px, 4.6vw, 21px);
+  font-size: var(--name-size);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -409,7 +411,7 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
   font-family: var(--font-display);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  font-size: clamp(16px, 4.6vw, 21px);
+  font-size: var(--mins-size);
   color: var(--amber);
   text-align: right;
   line-height: 1;
@@ -417,7 +419,7 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
 .mins small {
   display: block;
   font-family: var(--font-ui);
-  font-size: clamp(10px, 2.5vw, 11px);
+  font-size: var(--mins-unit-size);
   font-weight: 400;
   color: var(--dim);
   letter-spacing: 0.06em;
@@ -456,7 +458,6 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
   section[data-key="bus-1"] { grid-area: bus-1; }
   section[data-key="bus-2"] { grid-area: bus-2; }
 
-  /* compact density so more rows fit */
   /* Point sizes come from the card's density tier, not from the viewport, so
      this block is purely about layout now. */
   section h2 { padding: 6px 10px 5px; }
