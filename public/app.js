@@ -156,6 +156,64 @@ function densityFor(w, h) {
         return "compact";
     return "glance";
 }
+// ---- Landscape layout ------------------------------------------------------
+// The wall board has no scrollbar and nobody standing at it to scroll, so when
+// there are more cards than fit legibly it does what a real PIDS board does:
+// keeps the important one pinned and cycles the rest. The floor below is the
+// point past which shrinking stops being an option - a card narrower or
+// shorter than this cannot show a header plus three readable rows.
+const CARD_FLOOR = { w: 260, h: 130 }; // header plus three glance rows
+const CYCLE_MS = 15_000;
+const MAX_SECONDARY_COLS = 3;
+let pageIndex = 0;
+let pageTimer;
+let pageJustTurned = false;
+/**
+ * Works out the grid from the space available and the number of cards, rather
+ * than from a fixed template. The primary card takes column one for the full
+ * height; everything else tiles into the columns beside it, adding a column
+ * only while each one stays above the floor.
+ */
+function planLandscape(boardW, boardH, secondaries, primaryWide) {
+    const primaryFr = primaryWide ? 1.75 : 1;
+    if (secondaries <= 0)
+        return { cols: 0, rows: 1, perPage: 1, pages: 1, primaryFr };
+    // The most rows this height can carry without a card dropping below the floor.
+    const rowsMax = Math.max(1, Math.floor(boardH / CARD_FLOOR.h));
+    // Widen only while there is more to place and each column stays readable.
+    let cols = 1;
+    while (cols < MAX_SECONDARY_COLS && cols * rowsMax < secondaries) {
+        const next = cols + 1;
+        if (boardW / (primaryFr + next) < CARD_FLOOR.w)
+            break;
+        cols = next;
+    }
+    const perPage = Math.min(secondaries, cols * rowsMax);
+    const pages = Math.ceil(secondaries / perPage);
+    // Only as many rows as the visible page needs. Sizing from rowsMax instead
+    // would leave a short board padded out with empty grid rows.
+    const rows = Math.max(1, Math.min(rowsMax, Math.ceil(perPage / cols)));
+    return { cols, rows, perPage, pages, primaryFr };
+}
+function stopCycling() {
+    if (pageTimer !== undefined) {
+        clearInterval(pageTimer);
+        pageTimer = undefined;
+    }
+}
+function startCycling(pages) {
+    stopCycling();
+    if (pages <= 1)
+        return;
+    pageTimer = window.setInterval(() => {
+        // Never rotate the board out from under someone using a menu.
+        if (anyMenuOpen())
+            return;
+        pageIndex = (pageIndex + 1) % pages;
+        pageJustTurned = true;
+        render();
+    }, CYCLE_MS);
+}
 // ---- Small DOM helpers (typed) --------------------------------------------
 function el(tag, className, text) {
     const node = document.createElement(tag);
@@ -370,21 +428,6 @@ function toggleCollapsed(card) {
         collapsedCards.add(card.id);
 }
 /**
- * The pre-cards CSS keys its landscape grid areas off the names "train",
- * "bus-1" and "bus-2". Phases 4 and 5 replace that fixed grid with one derived
- * from the card list, and this mapping goes away with it.
- */
-function legacySlotFor(card, index) {
-    if (card.mode === "train")
-        return "train";
-    let busIndex = 0;
-    for (let i = 0; i < index; i++) {
-        if (cards[i].mode === "bus")
-            busIndex++;
-    }
-    return `bus-${busIndex + 1}`;
-}
-/**
  * Side-by-side direction columns, or stacked with the labels as dividers?
  * Driven by the card's measured width, so the same card renders correctly at
  * any size in any orientation. Before the first measurement, fall back to the
@@ -430,6 +473,9 @@ const cardObserver = new ResizeObserver((entries) => {
         });
     }
 });
+function primaryCard() {
+    return cards.find((c) => c.primary) ?? cards[0];
+}
 function anyMenuOpen() {
     return stationMenuCardId !== null || busMenuCardId !== null;
 }
@@ -945,6 +991,93 @@ function buildBusPortrait(section, card, stop, h2) {
         rowsWrap.appendChild(makeEmptyNote("No departures"));
 }
 // ---- Render ---------------------------------------------------------------
+function buildCardSection(card, isGrid) {
+    const stop = boardForCard(card);
+    if (!stop)
+        return null; // payload predates a just-changed card; next refresh fixes it
+    const isTrain = card.mode === "train";
+    const section = el("section");
+    section.dataset.cardId = card.id;
+    const known = cardSize.get(card.id);
+    if (known)
+        section.dataset.density = densityFor(known.w, known.h);
+    const h2 = el("h2", "picker");
+    const nameEl = el("span", "h2-name");
+    // Both train and bus headers are pickers; only the menu differs.
+    nameEl.append(el("span", undefined, stop.label), el("span", "caret", "\u25be"));
+    nameEl.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const wasOpen = isTrain
+            ? stationMenuCardId === card.id
+            : busMenuCardId === card.id;
+        closeAllMenus();
+        if (!wasOpen) {
+            if (isTrain)
+                stationMenuCardId = card.id;
+            else
+                busMenuCardId = card.id;
+        }
+        render();
+    });
+    h2.appendChild(nameEl);
+    if (isTrain && !isGrid) {
+        h2.appendChild(makeCollapseButton(isCollapsed(card), () => {
+            toggleCollapsed(card);
+            render();
+        }));
+    }
+    section.appendChild(h2);
+    if (isTrain) {
+        const showBody = isGrid || !isCollapsed(card);
+        if (showBody) {
+            const split = splitForType(stop.stationType);
+            // Height-constrained cards fill and get trimmed; free-flowing ones use
+            // a fixed cap. Whether the columns sit side by side is a separate,
+            // width-driven question.
+            if (isGrid)
+                buildTrainGrid(section, card, stop, split, splitSideBySide(card, isGrid));
+            else
+                buildTrainStacked(section, card, stop, split, splitSideBySide(card, isGrid));
+        }
+    }
+    else {
+        if (isGrid)
+            buildBusGrid(section, card, stop);
+        else
+            buildBusPortrait(section, card, stop, h2);
+    }
+    if (isTrain && stationMenuCardId === card.id)
+        buildStationMenu(section, card);
+    if (!isTrain && busMenuCardId === card.id)
+        buildBusMenu(section);
+    return section;
+}
+// Page indicator for a board that is cycling. Clickable, so the dots double as
+// a way to jump straight to a page rather than waiting for it to come round.
+function buildPageDots(pages) {
+    const wrap = el("div", "page-dots");
+    for (let i = 0; i < pages; i++) {
+        const dot = el("button", "page-dot" + (i === pageIndex ? " on" : ""));
+        dot.type = "button";
+        dot.setAttribute("aria-label", `Page ${i + 1} of ${pages}`);
+        dot.addEventListener("click", (e) => {
+            e.stopPropagation();
+            pageIndex = i;
+            pageJustTurned = true;
+            startCycling(pages); // restart the dwell so a tap gets a full interval
+            render();
+        });
+        wrap.appendChild(dot);
+    }
+    return wrap;
+}
+/** Is this card's content wide enough to deserve the larger column? */
+function wantsWideColumn(card) {
+    if (card.mode !== "train")
+        return false;
+    const stop = boardForCard(card);
+    return splitForType(stop?.stationType) !== null;
+}
 function render() {
     if (!lastPayload)
         return;
@@ -955,69 +1088,60 @@ function render() {
     board.innerHTML = "";
     busListEl = null; // the old list node is about to be discarded
     const isGrid = getComputedStyle(board).display === "grid";
-    cards.forEach((card, index) => {
-        const stop = boardForCard(card);
-        if (!stop)
-            return; // payload predates a just-changed card; next refresh fixes it
-        const isTrain = card.mode === "train";
-        const section = el("section");
-        section.dataset.key = legacySlotFor(card, index);
-        section.dataset.cardId = card.id;
-        const known = cardSize.get(card.id);
-        if (known)
-            section.dataset.density = densityFor(known.w, known.h);
-        const h2 = el("h2", "picker");
-        const nameEl = el("span", "h2-name");
-        // Both train and bus headers are pickers; only the menu differs.
-        nameEl.append(el("span", undefined, stop.label), el("span", "caret", "▾"));
-        nameEl.addEventListener("click", (e) => {
-            e.stopPropagation();
-            const wasOpen = isTrain
-                ? stationMenuCardId === card.id
-                : busMenuCardId === card.id;
-            closeAllMenus();
-            if (!wasOpen) {
-                if (isTrain)
-                    stationMenuCardId = card.id;
-                else
-                    busMenuCardId = card.id;
+    let ordered;
+    let plan = null;
+    if (isGrid) {
+        const primary = primaryCard();
+        const secondaries = cards.filter((c) => c !== primary);
+        const rect = board.getBoundingClientRect();
+        plan = planLandscape(rect.width, rect.height, secondaries.length, primary ? wantsWideColumn(primary) : false);
+        if (pageIndex >= plan.pages)
+            pageIndex = 0;
+        const from = pageIndex * plan.perPage;
+        const page = plan.pages > 1 ? secondaries.slice(from, from + plan.perPage) : secondaries;
+        board.style.gridTemplateColumns =
+            `${plan.primaryFr}fr` + (plan.cols > 0 ? ` repeat(${plan.cols}, 1fr)` : "");
+        board.style.gridTemplateRows = `repeat(${plan.rows}, 1fr)`;
+        ordered = primary ? [primary, ...page] : page;
+    }
+    else {
+        // Portrait scrolls, so every card is present and the grid is not in play.
+        board.style.gridTemplateColumns = "";
+        board.style.gridTemplateRows = "";
+        ordered = cards;
+        stopCycling();
+    }
+    ordered.forEach((card, i) => {
+        const section = buildCardSection(card, isGrid);
+        if (!section)
+            return;
+        if (isGrid && plan) {
+            if (i === 0) {
+                section.dataset.role = "primary";
+                section.style.gridColumn = "1";
+                section.style.gridRow = `1 / span ${plan.rows}`;
             }
-            render();
-        });
-        h2.appendChild(nameEl);
-        if (isTrain && !isGrid) {
-            h2.appendChild(makeCollapseButton(isCollapsed(card), () => {
-                toggleCollapsed(card);
-                render();
-            }));
-        }
-        section.appendChild(h2);
-        if (isTrain) {
-            const showBody = isGrid || !isCollapsed(card);
-            if (showBody) {
-                const split = splitForType(stop.stationType);
-                // Height-constrained cards fill and get trimmed; free-flowing ones use
-                // a fixed cap. Whether the columns sit side by side is a separate,
-                // width-driven question.
-                if (isGrid)
-                    buildTrainGrid(section, card, stop, split, splitSideBySide(card, isGrid));
-                else
-                    buildTrainStacked(section, card, stop, split, splitSideBySide(card, isGrid));
+            else {
+                const k = i - 1;
+                section.dataset.role = "secondary";
+                section.style.gridColumn = String(2 + (k % plan.cols));
+                section.style.gridRow = String(1 + Math.floor(k / plan.cols));
             }
         }
-        else {
-            if (isGrid)
-                buildBusGrid(section, card, stop);
-            else
-                buildBusPortrait(section, card, stop, h2);
-        }
-        if (isTrain && stationMenuCardId === card.id)
-            buildStationMenu(section, card);
-        if (!isTrain && busMenuCardId === card.id)
-            buildBusMenu(section);
         board.appendChild(section);
         cardObserver.observe(section);
     });
+    if (isGrid && plan && plan.pages > 1) {
+        board.appendChild(buildPageDots(plan.pages));
+        startCycling(plan.pages);
+    }
+    else {
+        stopCycling();
+    }
+    // Only the render that follows a page turn animates; a routine refresh must
+    // not make the whole board flicker.
+    board.classList.toggle("page-turn", pageJustTurned);
+    pageJustTurned = false;
     trimOverflow(isGrid);
     updateWalkUI();
 }

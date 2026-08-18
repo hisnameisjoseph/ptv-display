@@ -129,6 +129,46 @@ header {
   gap: clamp(12px, 2.5vw, 22px);
   flex: 1;
   min-height: 0;
+  position: relative; /* anchors the page indicator */
+}
+
+/* Page indicator, shown only when the board carries more cards than fit and
+   has started cycling. Sits over the bottom-right corner rather than taking a
+   grid cell of its own. */
+.page-dots {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  display: flex;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 30;
+}
+.page-dot {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: #4a4a4a;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+.page-dot.on { background: var(--amber); }
+.page-dot:hover { background: var(--ink); }
+
+/* Only the render that follows a page turn animates. A board nobody is
+   touching should not twitch every 45 seconds when the data refreshes. */
+@media (prefers-reduced-motion: no-preference) {
+  #board.page-turn section[data-role="secondary"] {
+    animation: card-in 0.32s ease both;
+  }
+}
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
 }
 
 /* Stop sections.
@@ -193,6 +233,7 @@ section[data-density="compact"] .dest .meta > .meta-platform + .meta-live::befor
 section[data-density="glance"] .dest .meta > .meta-platform + .meta-live::before { content: none; }
 /* At glance the countdown's unit label, not the destination, is what sets the
    row height - dropping it is what actually buys back a row. */
+section[data-density="glance"] .dest .meta { display: none; }
 section[data-density="glance"] .mins small { display: none; }
 
 section h2 {
@@ -444,13 +485,11 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
   #clock { font-size: 16px; }
   #freshness { font-size: 11px; }
   #walk-label { font-size: 10px; }
+  /* The template is written by the layout engine in app.ts, derived from the
+     number of cards and the space available. No fixed areas: the board has to
+     hold anything from one card to eight. */
   #board {
     display: grid;
-    grid-template-columns: 1.75fr 1fr;
-    grid-template-rows: 1fr 1fr;
-    grid-template-areas:
-      "train bus-1"
-      "train bus-2";
     gap: 10px;
   }
   section { min-height: 0; }              /* let grid constrain height */
