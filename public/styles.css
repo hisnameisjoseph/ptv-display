@@ -209,6 +209,7 @@ section[data-density="compact"] {
   --colh-size: 9px;
 }
 section[data-density="glance"] {
+  --row-pad-y: 4px;
   --name-size: 15px;
   --meta-size: 9px;
   --mins-size: 16px;
@@ -221,20 +222,46 @@ section[data-density="glance"] {
   --colh-size: 9px;
 }
 
+
 /* Metadata is shed tier by tier. Platform goes first: on a small card the
    line colour, destination and countdown carry the decision on their own.
    The second rule matters as much as the first - dropping the platform
    promotes the next fact to first place, so its leading separator has to go
-   with it. Both selectors are deliberately specific enough to beat the
-   generic separator rule further down. */
-section[data-density="compact"] .dest .meta > .meta-platform,
+   with it. Compact keeps the platform: the metadata line occupies a row's
+   height whether it holds one fact or three, so dropping it there bought
+   nothing and cost the most useful fact on a train row. */
 section[data-density="glance"] .dest .meta > .meta-platform { display: none; }
-section[data-density="compact"] .dest .meta > .meta-platform + .meta-live::before,
 section[data-density="glance"] .dest .meta > .meta-platform + .meta-live::before { content: none; }
-/* At glance the countdown's unit label, not the destination, is what sets the
-   row height - dropping it is what actually buys back a row. */
-section[data-density="glance"] .dest .meta { display: none; }
-section[data-density="glance"] .mins small { display: none; }
+/* Every tier keeps the same two-line row - destination above its metadata -
+   so a dense card reads as the same design at a smaller size rather than as a
+   different, broken one. Glance buys its height back from leading and from
+   un-stacking the countdown unit, not by deleting information. */
+section[data-density="glance"] .dest .name { line-height: 1.05; }
+section[data-density="glance"] .dest .meta { line-height: 1; }
+section[data-density="glance"] .dest .meta > .meta-live { display: none; }
+/* Only the time survives at glance, so nothing needs a separator in front of
+   it. Specific enough to beat the generic separator rule further down. */
+section[data-density="glance"] .dest .meta > span::before { content: none; }
+section[data-density="glance"] .mins { line-height: 1; }
+
+/* A long stop name wrapping the header to two lines costs a whole departure on
+   a card this small, which is a worse trade than truncating a name the user
+   chose themselves. */
+section[data-density="glance"] h2 { padding: 5px 9px 4px; }
+section[data-density="glance"] h2 .h2-name { min-width: 0; }
+section[data-density="glance"] h2 .h2-name > span:first-child {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+section[data-density="glance"] .mins small {
+  display: inline;
+  margin-left: 0.15em;
+  font-size: 9px;
+  text-transform: lowercase;
+  letter-spacing: 0;
+}
 
 section h2 {
   display: flex;
@@ -493,9 +520,6 @@ h2 .caret { color: var(--dim); font-size: 0.85em; }
     gap: 10px;
   }
   section { min-height: 0; }              /* let grid constrain height */
-  section[data-key="train"]    { grid-area: train; }
-  section[data-key="bus-1"] { grid-area: bus-1; }
-  section[data-key="bus-2"] { grid-area: bus-2; }
 
   /* Point sizes come from the card's density tier, not from the viewport, so
      this block is purely about layout now. */
