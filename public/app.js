@@ -352,13 +352,6 @@ if (!Number.isFinite(walkMinutes) || walkMinutes < 0)
 let stationMenuCardId = null;
 let busMenuCardId = null;
 let stationQuery = "";
-// Collapse state, held in memory to match the pre-cards behaviour. Phase 6
-// moves this into the layout when portrait collapse gets its proper design.
-const collapsedCards = new Set();
-for (const card of cards) {
-    if (card.mode === "bus")
-        collapsedCards.add(card.id);
-}
 let lastPayload = null;
 // Measured card geometry, keyed by card id. The observer keeps this current so
 // the next render already knows how wide each card will be, rather than
@@ -418,14 +411,19 @@ function visibleDepartures(card, stop) {
         return minutesUntil(dep.estimatedUtc ?? dep.scheduledUtc) >= hideWithin;
     });
 }
+/**
+ * Collapse is per card and persisted. With nothing stored, the primary card is
+ * the one you came to read, so it opens and everything else stays shut - which
+ * is what keeps roughly four cards above the fold on a phone.
+ */
 function isCollapsed(card) {
-    return collapsedCards.has(card.id);
+    if (typeof card.collapsed === "boolean")
+        return card.collapsed;
+    return !card.primary;
 }
 function toggleCollapsed(card) {
-    if (collapsedCards.has(card.id))
-        collapsedCards.delete(card.id);
-    else
-        collapsedCards.add(card.id);
+    card.collapsed = !isCollapsed(card);
+    saveLayout();
 }
 /**
  * Side-by-side direction columns, or stacked with the labels as dividers?
@@ -951,31 +949,89 @@ function buildBusGrid(section, card, stop) {
         rowsWrap.appendChild(makeEmptyNote("No catchable departures right now."));
     }
 }
+/**
+ * The departures a collapsed card should advertise. A split station shows the
+ * next service in each direction - two chronological departures could both be
+ * heading the same way, which is exactly the case where a summary misleads.
+ * Everything else shows the next two.
+ */
+function summaryDepartures(split, departures, limit) {
+    if (!split)
+        return departures.slice(0, limit);
+    const picked = [];
+    for (const side of orderedSides(split)) {
+        const next = departures.find((dep) => pickColumn(split, dep) === side);
+        if (next)
+            picked.push(next);
+    }
+    return picked.length > 0 ? picked.slice(0, limit) : departures.slice(0, limit);
+}
+/**
+ * The inline summary in a collapsed card's header. Trains get their line
+ * colour, buses their route number, so a glance at a shut card still tells you
+ * which service the countdown belongs to.
+ */
+function buildSummary(card, departures) {
+    const times = el("span", "h2-times");
+    for (const dep of departures) {
+        const chip = el("span", "h2-chip");
+        const badge = el("span", "h2-badge " + (card.mode === "train" ? "train" : "bus"));
+        badge.textContent = card.mode === "train" ? dep.route.charAt(0) : dep.route;
+        if (card.mode === "train") {
+            const c = lineColor(dep.route);
+            if (c) {
+                badge.style.background = c.bg;
+                badge.style.color = c.fg;
+            }
+        }
+        const mins = minutesUntil(dep.estimatedUtc ?? dep.scheduledUtc);
+        chip.append(badge, el("span", "h2-mins", mins + "m"));
+        times.appendChild(chip);
+    }
+    return times;
+}
+// Portrait: a train card collapses like every other card now, summarising the
+// next service in each direction rather than going blank.
+function buildTrainPortrait(section, card, stop, h2, split) {
+    const collapsed = isCollapsed(card);
+    const catchable = stop.error ? [] : visibleDepartures(card, stop);
+    let times;
+    if (stop.error) {
+        times = el("span", "h2-times none", "no data");
+    }
+    else if (catchable.length === 0) {
+        times = el("span", "h2-times none", "none");
+    }
+    else {
+        times = buildSummary(card, summaryDepartures(split, catchable, PORTRAIT.busSummaryTimes));
+    }
+    h2.append(times, makeCollapseButton(collapsed, () => {
+        toggleCollapsed(card);
+        render();
+    }));
+    if (collapsed)
+        return;
+    buildTrainStacked(section, card, stop, split, splitSideBySide(card, false));
+}
 // Portrait: bus header shows next times inline plus a right-side collapse
 // chevron matching the train header. The chevron is the collapse control.
 function buildBusPortrait(section, card, stop, h2) {
     const collapsed = isCollapsed(card);
     const catchable = stop.error ? [] : visibleDepartures(card, stop);
-    const times = el("span", "h2-times");
+    let times;
     if (stop.error) {
-        times.classList.add("none");
-        times.textContent = "no data";
+        times = el("span", "h2-times none", "no data");
     }
     else if (catchable.length === 0) {
-        times.classList.add("none");
-        times.textContent = "none";
+        times = el("span", "h2-times none", "none");
     }
     else {
-        for (const dep of catchable.slice(0, PORTRAIT.busSummaryTimes)) {
-            const mins = minutesUntil(dep.estimatedUtc ?? dep.scheduledUtc);
-            times.appendChild(el("span", undefined, dep.route + " " + mins + "m"));
-        }
+        times = buildSummary(card, catchable.slice(0, PORTRAIT.busSummaryTimes));
     }
-    const collapse = makeCollapseButton(collapsed, () => {
+    h2.append(times, makeCollapseButton(collapsed, () => {
         toggleCollapsed(card);
         render();
-    });
-    h2.append(times, collapse);
+    }));
     if (collapsed)
         return;
     const rowsWrap = el("div", "rows");
@@ -998,6 +1054,8 @@ function buildCardSection(card, isGrid) {
     const isTrain = card.mode === "train";
     const section = el("section");
     section.dataset.cardId = card.id;
+    if (!isGrid && isCollapsed(card))
+        section.dataset.collapsed = "true";
     const known = cardSize.get(card.id);
     if (known)
         section.dataset.density = densityFor(known.w, known.h);
@@ -1020,25 +1078,16 @@ function buildCardSection(card, isGrid) {
         render();
     });
     h2.appendChild(nameEl);
-    if (isTrain && !isGrid) {
-        h2.appendChild(makeCollapseButton(isCollapsed(card), () => {
-            toggleCollapsed(card);
-            render();
-        }));
-    }
     section.appendChild(h2);
     if (isTrain) {
-        const showBody = isGrid || !isCollapsed(card);
-        if (showBody) {
-            const split = splitForType(stop.stationType);
-            // Height-constrained cards fill and get trimmed; free-flowing ones use
-            // a fixed cap. Whether the columns sit side by side is a separate,
-            // width-driven question.
-            if (isGrid)
-                buildTrainGrid(section, card, stop, split, splitSideBySide(card, isGrid));
-            else
-                buildTrainStacked(section, card, stop, split, splitSideBySide(card, isGrid));
-        }
+        const split = splitForType(stop.stationType);
+        // Height-constrained cards fill and get trimmed; free-flowing ones use a
+        // fixed cap. Whether the columns sit side by side is a separate,
+        // width-driven question.
+        if (isGrid)
+            buildTrainGrid(section, card, stop, split, splitSideBySide(card, isGrid));
+        else
+            buildTrainPortrait(section, card, stop, h2, split);
     }
     else {
         if (isGrid)
