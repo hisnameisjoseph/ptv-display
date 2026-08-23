@@ -59,6 +59,17 @@ interface StationPickerEntry {
   stationType: string;
 }
 
+/** A row from /api/search - trains and bus stops in one ranked list. */
+interface SearchHit {
+  mode: CardMode;
+  routeType: number;
+  stopId: number;
+  label: string;
+  suburb: string | null;
+  stationType?: string;
+  routes: { id: number; label: string }[];
+}
+
 interface BusSearchResult {
   stopId: number;
   label: string;
@@ -118,6 +129,9 @@ const LAYOUT_VERSION = 2;
 // roughly five the board stops being glanceable in either orientation.
 const MAX_CARDS = 8;
 const WARN_FROM = 5;
+
+// How long a removed card can be brought back.
+const UNDO_MS = 7000;
 
 // ---- Constants ------------------------------------------------------------
 
@@ -489,6 +503,26 @@ if (!Number.isFinite(walkMinutes) || walkMinutes < 0) walkMinutes = WALK_DEFAULT
 let stationMenuCardId: string | null = null;
 let busMenuCardId: string | null = null;
 let stationQuery = "";
+
+// Edit mode. The board is wall-mounted as often as it is held, so every
+// control that can change the layout stays hidden until it is asked for.
+let editMode = false;
+let settingsCardId: string | null = null;
+let addMenuOpen = false;
+
+// A removal is undoable rather than confirmed: a dialog interrupts, a toast
+// does not, and getting a card back is one tap either way.
+interface PendingUndo { card: Card; index: number; timer: number; }
+let pendingUndo: PendingUndo | null = null;
+
+// Unified picker (add a stop), backed by /api/search.
+let addQuery = "";
+let addResults: SearchHit[] = [];
+let addState: LoadState = "idle";
+let addError: string | null = null;
+let addDebounce: number | undefined;
+let addSeq = 0;
+let addListEl: HTMLElement | null = null;
 let lastPayload: BoardPayload | null = null;
 
 // Measured card geometry, keyed by card id. The observer keeps this current so
@@ -626,13 +660,141 @@ function primaryCard(): Card | undefined {
 }
 
 function anyMenuOpen(): boolean {
-  return stationMenuCardId !== null || busMenuCardId !== null;
+  return (
+    stationMenuCardId !== null ||
+    busMenuCardId !== null ||
+    settingsCardId !== null ||
+    addMenuOpen
+  );
 }
 
 function closeAllMenus(): void {
   stationMenuCardId = null;
   stationQuery = "";
+  settingsCardId = null;
+  closeAddMenu();
   closeBusMenu();
+}
+
+function closeAddMenu(): void {
+  addMenuOpen = false;
+  addQuery = "";
+  addResults = [];
+  addState = "idle";
+  addError = null;
+  addListEl = null;
+  if (addDebounce !== undefined) {
+    clearTimeout(addDebounce);
+    addDebounce = undefined;
+  }
+}
+
+// ---- Card mutations --------------------------------------------------------
+// Each one writes the layout and repaints. Only the ones that change which
+// stops the board asks for trigger a refetch.
+
+function moveCard(index: number, delta: number): void {
+  const to = index + delta;
+  if (to < 0 || to >= cards.length) return;
+  const [moved] = cards.splice(index, 1);
+  cards.splice(to, 0, moved);
+  saveLayout();
+  render();
+}
+
+function setPrimary(card: Card): void {
+  for (const c of cards) delete c.primary;
+  card.primary = true;
+  // The primary card is the one you came to read, so open it.
+  card.collapsed = false;
+  pageIndex = 0;
+  saveLayout();
+  render();
+}
+
+function clearUndo(): void {
+  if (pendingUndo) {
+    clearTimeout(pendingUndo.timer);
+    pendingUndo = null;
+  }
+}
+
+function setPrimaryQuiet(card: Card | undefined): void {
+  if (!card) return;
+  for (const c of cards) delete c.primary;
+  card.primary = true;
+}
+
+function removeCard(card: Card): void {
+  const index = cards.indexOf(card);
+  if (index < 0 || cards.length <= 1) return; // never leave a blank board
+  clearUndo();
+  cards.splice(index, 1);
+  if (!cards.some((c) => c.primary)) setPrimaryQuiet(cards[0]);
+  saveLayout();
+
+  pendingUndo = {
+    card,
+    index,
+    timer: window.setTimeout(() => {
+      pendingUndo = null;
+      render();
+    }, UNDO_MS),
+  };
+  render();
+}
+
+function undoRemove(): void {
+  if (!pendingUndo) return;
+  const { card, index } = pendingUndo;
+  clearUndo();
+  cards.splice(Math.min(index, cards.length), 0, card);
+  saveLayout();
+  refresh();
+}
+
+function addCard(hit: SearchHit): void {
+  if (cards.length >= MAX_CARDS) return;
+  if (cards.some((c) => c.mode === hit.mode && c.stopId === hit.stopId)) return;
+  cards.push({
+    id: newCardId(),
+    mode: hit.mode,
+    stopId: hit.stopId,
+    collapsed: true, // a new card announces itself without shoving the rest down
+  });
+  saveLayout();
+  closeAllMenus();
+  must("updated").textContent = "loading";
+  refresh();
+}
+
+function setCardWalk(card: Card, minutes: number): void {
+  card.walkMinutes = Math.max(0, minutes);
+  saveLayout();
+  render();
+}
+
+/** Toggles one route on a card. An empty selection means "all routes". */
+function toggleCardRoute(card: Card, routeId: number, allIds: number[]): void {
+  const current = card.routeIds && card.routeIds.length > 0 ? card.routeIds : allIds;
+  const next = current.includes(routeId)
+    ? current.filter((id) => id !== routeId)
+    : [...current, routeId];
+  // Selecting everything is the same as filtering nothing; store it as such so
+  // the card stops advertising a filter it is not really applying.
+  card.routeIds = next.length === 0 || next.length === allIds.length ? undefined : next;
+  saveLayout();
+  render();
+}
+
+/** Distinct routes seen at this stop, taken from the unfiltered payload so a
+ *  filter can never hide the very options needed to undo it. */
+function routeOptions(stop: StopBoard): { id: number; label: string }[] {
+  const seen = new Map<number, string>();
+  for (const dep of stop.departures) {
+    if (!seen.has(dep.routeId)) seen.set(dep.routeId, dep.route);
+  }
+  return [...seen].map(([id, label]) => ({ id, label }));
 }
 
 // Applies a stop change to a card and refreshes, or just repaints if nothing
@@ -1040,6 +1202,16 @@ document.addEventListener("click", () => {
   }
 });
 
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (anyMenuOpen()) {
+    closeAllMenus();
+    render();
+  } else if (editMode) {
+    setEditMode(false);
+  }
+});
+
 // ---- Section builders ------------------------------------------------------
 
 function buildTrainGrid(
@@ -1268,9 +1440,309 @@ function buildBusPortrait(
   if (shownDeps.length === 0) rowsWrap.appendChild(makeEmptyNote("No departures"));
 }
 
+// ---- Unified picker (add a stop) -------------------------------------------
+
+async function runAddSearch(term: string): Promise<void> {
+  const seq = ++addSeq;
+  addState = "loading";
+  paintAddList();
+  try {
+    const res = await fetch("/api/search?q=" + encodeURIComponent(term));
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = (await res.json()) as SearchHit[];
+    if (seq !== addSeq) return; // a newer search already won
+    addResults = data;
+    addState = "loaded";
+    addError = null;
+  } catch (err) {
+    if (seq !== addSeq) return;
+    addResults = [];
+    addError = err instanceof Error ? err.message : "search failed";
+    addState = "error";
+  }
+  paintAddList();
+}
+
+function scheduleAddSearch(): void {
+  if (addDebounce !== undefined) clearTimeout(addDebounce);
+  const term = addQuery.replace(/\s+/g, "");
+  if (term.length < MIN_SEARCH_CHARS) {
+    addSeq++;
+    addResults = [];
+    addState = "idle";
+    paintAddList();
+    return;
+  }
+  addDebounce = window.setTimeout(() => {
+    addDebounce = undefined;
+    runAddSearch(addQuery.trim());
+  }, BUS_SEARCH_DEBOUNCE_MS);
+}
+
+function paintAddList(): void {
+  const list = addListEl;
+  if (!list || !list.isConnected) return;
+  list.innerHTML = "";
+
+  if (addState === "idle") {
+    list.appendChild(el("div", "no-match", `Type at least ${MIN_SEARCH_CHARS} characters.`));
+    return;
+  }
+  if (addState === "loading") {
+    list.appendChild(el("div", "no-match", "Searching\u2026"));
+    return;
+  }
+  if (addState === "error") {
+    list.appendChild(el("div", "error", "Search failed. " + (addError ?? "")));
+    return;
+  }
+  if (addResults.length === 0) {
+    list.appendChild(el("div", "no-match", "Nothing matches."));
+    return;
+  }
+
+  for (const hit of addResults) {
+    const already = cards.some((c) => c.mode === hit.mode && c.stopId === hit.stopId);
+    const btn = el("button", "opt" + (already ? " taken" : ""));
+    btn.type = "button";
+    btn.disabled = already;
+
+    btn.appendChild(el("span", "opt-mode " + hit.mode, hit.mode === "train" ? "Train" : "Bus"));
+    btn.appendChild(el("span", undefined, hit.label));
+    if (already) {
+      btn.appendChild(el("span", "opt-routes", "Added"));
+    } else if (hit.routes.length > 0) {
+      const shown = hit.routes.slice(0, BUS_ROUTES_SHOWN).map((r) => r.label).join(", ");
+      const extra = hit.routes.length - BUS_ROUTES_SHOWN;
+      btn.appendChild(el("span", "opt-routes", shown + (extra > 0 ? ` +${extra}` : "")));
+    }
+
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      addCard(hit);
+    });
+    list.appendChild(btn);
+  }
+}
+
+function buildAddMenu(host: HTMLElement): void {
+  const menu = el("div", "station-menu add-menu");
+  menu.addEventListener("click", (e) => e.stopPropagation());
+
+  const search = el("input", "station-search") as HTMLInputElement;
+  search.type = "text";
+  search.placeholder = "Search stations and bus stops";
+  search.value = addQuery;
+  search.addEventListener("input", () => {
+    addQuery = search.value;
+    scheduleAddSearch();
+  });
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      const first = list.querySelector<HTMLButtonElement>("button.opt:not([disabled])");
+      if (first) first.click();
+    } else if (e.key === "Escape") {
+      closeAddMenu();
+      render();
+    }
+  });
+
+  const list = el("div", "station-list");
+  addListEl = list;
+
+  menu.append(search, list);
+  host.appendChild(menu);
+  paintAddList();
+  setTimeout(() => search.focus(), 0);
+}
+
+/** The dashed tile that ends the board in edit mode. */
+function buildAddTile(): HTMLElement {
+  const tile = el("div", "add-tile");
+  const full = cards.length >= MAX_CARDS;
+
+  const btn = el("button", "add-btn");
+  btn.type = "button";
+  btn.disabled = full;
+  btn.append(
+    el("span", "add-plus", "+"),
+    el("span", undefined, full ? `Limit of ${MAX_CARDS} stops` : "Add stop"),
+  );
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (full) return;
+    const wasOpen = addMenuOpen;
+    closeAllMenus();
+    addMenuOpen = !wasOpen;
+    render();
+  });
+  tile.appendChild(btn);
+
+  if (!full && cards.length >= WARN_FROM) {
+    tile.appendChild(el("div", "add-note", "Cards are getting tight at this many stops."));
+  }
+  if (addMenuOpen) buildAddMenu(tile);
+  return tile;
+}
+
+// ---- Per-card edit controls ------------------------------------------------
+
+function iconButton(
+  cls: string,
+  glyph: string,
+  label: string,
+  onClick: () => void,
+  disabled = false,
+): HTMLButtonElement {
+  const btn = el("button", cls, glyph);
+  btn.type = "button";
+  btn.disabled = disabled;
+  btn.setAttribute("aria-label", label);
+  btn.title = label;
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    onClick();
+  });
+  return btn;
+}
+
+function buildEditControls(card: Card, index: number): HTMLElement {
+  const bar = el("div", "card-edit");
+  bar.append(
+    iconButton("ce-btn", "\u2191", "Move up", () => moveCard(index, -1), index === 0),
+    iconButton("ce-btn", "\u2193", "Move down", () => moveCard(index, +1), index === cards.length - 1),
+    iconButton(
+      "ce-btn star" + (card.primary ? " on" : ""),
+      card.primary ? "\u2605" : "\u2606",
+      card.primary ? "Primary card" : "Make primary",
+      () => setPrimary(card),
+      !!card.primary,
+    ),
+    iconButton("ce-btn", "\u2699", "Stop settings", () => {
+      const wasOpen = settingsCardId === card.id;
+      closeAllMenus();
+      if (!wasOpen) settingsCardId = card.id;
+      render();
+    }),
+    iconButton("ce-btn danger", "\u2715", "Remove stop", () => removeCard(card), cards.length <= 1),
+  );
+  return bar;
+}
+
+function buildSettingsSheet(host: HTMLElement, card: Card, stop: StopBoard): void {
+  const sheet = el("div", "settings-sheet");
+  sheet.addEventListener("click", (e) => e.stopPropagation());
+
+  const walkRow = el("div", "set-row");
+  walkRow.appendChild(el("span", "set-label", "Walk to stop"));
+  const stepper = el("div", "set-stepper");
+  stepper.append(
+    iconButton("ce-btn", "\u2212", "Less walking time", () => {
+      const i = WALK_STOPS.indexOf(effectiveWalk(card));
+      setCardWalk(card, WALK_STOPS[Math.max(0, (i < 0 ? 1 : i) - 1)]);
+    }),
+    el("span", "set-value", effectiveWalk(card) + " min"),
+    iconButton("ce-btn", "+", "More walking time", () => {
+      const i = WALK_STOPS.indexOf(effectiveWalk(card));
+      setCardWalk(card, WALK_STOPS[Math.min(WALK_STOPS.length - 1, (i < 0 ? 0 : i) + 1)]);
+    }),
+  );
+  walkRow.appendChild(stepper);
+  sheet.appendChild(walkRow);
+  sheet.appendChild(el("div", "set-hint", "Departures you could not reach in time are hidden."));
+
+  const options = routeOptions(stop);
+  if (options.length > 1) {
+    const head = el("div", "set-row");
+    head.appendChild(el("span", "set-label", "Routes"));
+    const allOn = !card.routeIds || card.routeIds.length === 0;
+    const allBtn = el("button", "chip" + (allOn ? " on" : ""), "All");
+    allBtn.type = "button";
+    allBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      card.routeIds = undefined;
+      saveLayout();
+      render();
+    });
+    head.appendChild(allBtn);
+    sheet.appendChild(head);
+
+    const chips = el("div", "chip-row");
+    const allIds = options.map((o) => o.id);
+    for (const opt of options) {
+      const on = allOn || (card.routeIds ?? []).includes(opt.id);
+      const chip = el("button", "chip" + (on ? " on" : ""), opt.label);
+      chip.type = "button";
+      chip.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleCardRoute(card, opt.id, allIds);
+      });
+      chips.appendChild(chip);
+    }
+    sheet.appendChild(chips);
+  }
+
+  const done = el("button", "set-done", "Done");
+  done.type = "button";
+  done.addEventListener("click", (e) => {
+    e.stopPropagation();
+    settingsCardId = null;
+    render();
+  });
+  sheet.appendChild(done);
+
+  host.appendChild(sheet);
+}
+
+/** Small chips in the card header showing filters that are actually on, so a
+ *  card never hides departures for a reason you cannot see. */
+function buildFilterChips(card: Card): HTMLElement | null {
+  const bits: string[] = [];
+  const walk = effectiveWalk(card);
+  if (walk > 0) bits.push("\u25b8 " + walk + " min walk");
+  if (card.routeIds && card.routeIds.length > 0) bits.push(card.routeIds.length + " routes");
+  if (bits.length === 0) return null;
+  return el("span", "filter-chip", bits.join(" \u00b7 "));
+}
+
+function buildUndoToast(): HTMLElement {
+  const toast = el("div", "toast");
+  toast.appendChild(el("span", undefined, "Stop removed"));
+  const btn = el("button", "toast-undo", "Undo");
+  btn.type = "button";
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    undoRemove();
+  });
+  toast.appendChild(btn);
+  return toast;
+}
+
 // ---- Render ---------------------------------------------------------------
 
-function buildCardSection(card: Card, isGrid: boolean): HTMLElement | null {
+/**
+ * The name a card wears in its header.
+ *
+ * Every metro station name ends in "Station", so the word carries no
+ * information on a card that is already unmistakably a train - and the merged
+ * pairs are much the longest labels on the board. Only a trailing occurrence
+ * goes, and only on train cards, so a bus stop named "Southern Cross
+ * Station/Collins St" keeps its name intact. The picker, the search results
+ * and the stored label all stay full: you want certainty when choosing a stop,
+ * and brevity once it is yours.
+ */
+function cardTitle(card: Card, stop: StopBoard): string {
+  if (card.mode !== "train") return stop.label;
+  return stop.label
+    .split(" / ")
+    .map((part) => {
+      const trimmed = part.replace(/\s+Station$/i, "").trim();
+      return trimmed || part; // a stop named only "Station" keeps its name
+    })
+    .join(" / ");
+}
+
+function buildCardSection(card: Card, index: number, isGrid: boolean): HTMLElement | null {
   const stop = boardForCard(card);
   if (!stop) return null; // payload predates a just-changed card; next refresh fixes it
 
@@ -1286,7 +1758,7 @@ function buildCardSection(card: Card, isGrid: boolean): HTMLElement | null {
   const nameEl = el("span", "h2-name");
 
   // Both train and bus headers are pickers; only the menu differs.
-  nameEl.append(el("span", undefined, stop.label), el("span", "caret", "\u25be"));
+  nameEl.append(el("span", undefined, cardTitle(card, stop)), el("span", "caret", "\u25be"));
   nameEl.addEventListener("click", (e) => {
     e.stopPropagation();
     const wasOpen = isTrain
@@ -1300,7 +1772,10 @@ function buildCardSection(card: Card, isGrid: boolean): HTMLElement | null {
     render();
   });
   h2.appendChild(nameEl);
+  const chip = buildFilterChips(card);
+  if (chip) h2.appendChild(chip);
   section.appendChild(h2);
+  if (editMode) section.appendChild(buildEditControls(card, index));
 
   if (isTrain) {
     const split = splitForType(stop.stationType);
@@ -1316,6 +1791,7 @@ function buildCardSection(card: Card, isGrid: boolean): HTMLElement | null {
 
   if (isTrain && stationMenuCardId === card.id) buildStationMenu(section, card);
   if (!isTrain && busMenuCardId === card.id) buildBusMenu(section);
+  if (settingsCardId === card.id) buildSettingsSheet(section, card, stop);
 
   return section;
 }
@@ -1390,8 +1866,10 @@ function render(): void {
     stopCycling();
   }
 
+  board.classList.toggle("editing", editMode);
+
   ordered.forEach((card, i) => {
-    const section = buildCardSection(card, isGrid);
+    const section = buildCardSection(card, cards.indexOf(card), isGrid);
     if (!section) return;
 
     if (isGrid && plan) {
@@ -1411,7 +1889,11 @@ function render(): void {
     cardObserver.observe(section);
   });
 
-  if (isGrid && plan && plan.pages > 1) {
+  // The add tile only exists in edit mode, and never competes for a grid cell.
+  if (editMode) board.appendChild(buildAddTile());
+  if (pendingUndo) board.appendChild(buildUndoToast());
+
+  if (isGrid && plan && plan.pages > 1 && !editMode) {
     board.appendChild(buildPageDots(plan.pages));
     startCycling(plan.pages);
   } else {
@@ -1424,42 +1906,18 @@ function render(): void {
   pageJustTurned = false;
 
   trimOverflow(isGrid);
-  updateWalkUI();
 }
-// ---- Walk filter stepper ----------------------------------------------------
+// ---- Edit mode toggle ------------------------------------------------------
 
-function updateWalkUI(): void {
-  const wrap = must("walk");
-  const label = must("walk-label");
-  const on = walkMinutes > 0;
-  wrap.classList.toggle("on", on);
-  label.textContent = on ? "Walk " + walkMinutes + " min" : "Walk filter: off";
-}
-
-function setWalkMinutes(v: number): void {
-  walkMinutes = Math.max(0, v);
-  saveSetting("ptv-walk-minutes", String(walkMinutes));
+function setEditMode(on: boolean): void {
+  editMode = on;
+  if (!on) closeAllMenus();
+  const btn = must("edit-toggle");
+  btn.classList.toggle("on", on);
+  btn.setAttribute("aria-pressed", String(on));
+  btn.title = on ? "Done editing" : "Edit board";
   render();
 }
-
-// +/- snap to the nearest stop in WALK_STOPS, so tapping cycles sensibly
-function nudgeWalk(dir: number): void {
-  const stops = WALK_STOPS;
-  let idx = stops.indexOf(walkMinutes);
-  if (idx === -1) {
-    let nearest = 0, best = Infinity;
-    stops.forEach((s, i) => {
-      const d = Math.abs(s - walkMinutes);
-      if (d < best) { best = d; nearest = i; }
-    });
-    idx = nearest;
-  } else {
-    idx = Math.min(stops.length - 1, Math.max(0, idx + dir));
-  }
-  setWalkMinutes(stops[idx]);
-}
-
-let lastWalkValue = walkMinutes > 0 ? walkMinutes : WALK_DEFAULT;
 
 // ---- Data fetch -----------------------------------------------------------
 
@@ -1507,24 +1965,10 @@ function init(): void {
   // stored source of truth even if the user never changes anything.
   saveLayout();
 
-  must<HTMLButtonElement>("walk-minus").addEventListener("click", (e) => {
+  must<HTMLButtonElement>("edit-toggle").addEventListener("click", (e) => {
     e.stopPropagation();
-    nudgeWalk(-1);
+    setEditMode(!editMode);
   });
-  must<HTMLButtonElement>("walk-plus").addEventListener("click", (e) => {
-    e.stopPropagation();
-    nudgeWalk(+1);
-  });
-  must("walk-label").addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (walkMinutes > 0) {
-      lastWalkValue = walkMinutes;
-      setWalkMinutes(0);
-    } else {
-      setWalkMinutes(lastWalkValue);
-    }
-  });
-  updateWalkUI();
 
   // Board and station-picker fetches are independent: the board renders
   // as soon as it's back, without waiting on the picker list.
