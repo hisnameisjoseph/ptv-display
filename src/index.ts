@@ -34,12 +34,15 @@
  *   PTV_DEV_ID   - your numeric developer ID
  *   PTV_API_KEY  - your signing key (UUID-looking string)
  */
+import { mockDepartures, parseScenario } from "./mock";
 
 export interface Env {
   PTV_DEV_ID: string;
   PTV_API_KEY: string;
   ASSETS: Fetcher;
   DB: D1Database;
+  /** Set in .dev.vars to answer departures locally. Unset in production. */
+  PTV_MOCK?: string;
 }
 
 const PTV_BASE = "https://timetableapi.ptv.vic.gov.au";
@@ -108,7 +111,7 @@ async function signedUrl(pathWithQuery: string, env: Env): Promise<string> {
 }
 
 // ---- Types for the slim board payload -------------------------------------
-interface Departure {
+export interface Departure {
   route: string;    // e.g. "Werribee" line or bus number "82"
   routeId: number;  // PTV route_id; the client filters on this, not the label
   destination: string; // direction name
@@ -238,6 +241,11 @@ async function fetchDepartures(
   maxResults: number,
   env: Env,
 ): Promise<{ departures: Departure[]; stopName: string; error?: string }> {
+  // Mock mode intercepts here, at the single point that talks to PTV, so
+  // everything downstream runs against fake departures unchanged.
+  const scenario = parseScenario(env.PTV_MOCK);
+  if (scenario) return mockDepartures(env.DB, stopId, routeType, maxResults, scenario);
+
   const path =
     `/v3/departures/route_type/${routeType}/stop/${stopId}` +
     `?max_results=${maxResults}&expand=stop&expand=route&expand=direction`;

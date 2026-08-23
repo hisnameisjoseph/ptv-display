@@ -125,6 +125,11 @@ npx wrangler secret put PTV_API_KEY
 npm run deploy
 ```
 
+To reboot frontend, use:
+```bash
+npm run build:frontend
+```
+
 ## Roadmap
 
 - **Hardware display.** Driving a small networked screen (GeekMagic SmallTV) or an e-ink panel from the existing API via a lightweight image renderer.

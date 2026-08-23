@@ -4,19 +4,30 @@
  * Compiled to /public/app.js and loaded by index.html. All rendering happens
  * client-side from a single /api/board call to the Worker.
  *
+ * The board is an ordered list of cards. Each card names one stop - a train
+ * station or a bus stop - and carries its own settings: how long you need to
+ * reach it, and which routes you actually catch. The card list is the single
+ * source of truth, persisted as one layout object per device, so a wall
+ * display and a phone can show entirely different boards from one deployment.
+ *
  * Train stations: the board response carries stationType, which drives the
  * direction-split layout. The picker list is fetched once from /api/stations.
  *
  * Bus stops: one stop_id is one pole is one direction, so buses need no split
- * logic. There are two slots, each independently configurable. The picker
- * queries /api/stops/search as you type rather than preloading, because the
- * metro bus network has far too many stops to ship to the client.
+ * logic. The picker queries /api/stops/search as you type rather than
+ * preloading, because the metro bus network has far too many stops to ship to
+ * the client.
+ *
+ * Route filtering runs here rather than in the Worker on purpose: the Worker
+ * caches each stop unfiltered, so two people watching the same stop with
+ * different filters still share one upstream call.
  */
 
 // ---- Types ----------------------------------------------------------------
 
 interface Departure {
   route: string;
+  routeId: number;
   destination: string;
   platform: string | null;
   scheduledUtc: string;
@@ -24,18 +35,21 @@ interface Departure {
 }
 
 interface StopBoard {
-  key: string;               // "train" | "bus-1" | "bus-2"
+  key: string;               // "0:1072" - routeType:stopId, matches a card
+  mode: CardMode;
+  routeType: number;
+  stopId: number;
   label: string;
   stationType?: string;      // train boards only; drives split logic
-  stopId?: number;           // bus boards only
   stopName: string;
+  fetchedUtc: string;
   departures: Departure[];
   error?: string;
 }
 
 interface BoardPayload {
   updatedUtc: string;
-  station: number;
+  staleAtUtc: string | null; // when the oldest stop behind this board goes stale
   stops: StopBoard[];
 }
 
@@ -71,6 +85,40 @@ interface LineColor { bg: string; fg: string; }
 type ColumnSide = "left" | "right";
 type LoadState = "idle" | "loading" | "loaded" | "error";
 
+// ---- Card model -----------------------------------------------------------
+
+type CardMode = "train" | "bus";
+
+interface Card {
+  id: string;             // stable across reorders and stop changes
+  mode: CardMode;
+  stopId: number;
+  /** Exactly one card is primary; it gets the largest cell once the layout
+   *  engine lands in phase 5. */
+  primary?: boolean;
+  /** Persisted collapse state. Phase 6 wires this up; today collapse is held
+   *  in memory only, matching the pre-cards behaviour. */
+  collapsed?: boolean;
+  /** Minutes needed to reach this stop. Undefined falls back to the global
+   *  walk filter for trains, and to 0 for buses. */
+  walkMinutes?: number;
+  /** PTV route_ids to show. Undefined or empty means every route. */
+  routeIds?: number[];
+}
+
+interface Layout {
+  version: 2;
+  cards: Card[];
+}
+
+const LAYOUT_KEY = "ptv-layout";
+const LAYOUT_VERSION = 2;
+
+// Hard ceiling on cards. Each card is one PTV call on a cold cache, and past
+// roughly five the board stops being glanceable in either orientation.
+const MAX_CARDS = 8;
+const WARN_FROM = 5;
+
 // ---- Constants ------------------------------------------------------------
 
 const REFRESH_MS = 45_000;
@@ -91,10 +139,15 @@ const PORTRAIT = {
 // Fallbacks. These match the Worker's own defaults, so a fresh device and a
 // cold Worker agree on what to show before the user picks anything.
 const DEFAULT_STATION_STOP_ID = 1072;  // Footscray
-const BUS_SLOTS = [
-  { key: "bus-1", storageKey: "ptv-bus-1", defaultStopId: 19740 },
-  { key: "bus-2", storageKey: "ptv-bus-2", defaultStopId: 20796 },
-] as const;
+const DEFAULT_BUS_STOP_IDS = [19740, 20796];
+
+// Pre-cards storage keys. Still read during migration, and deliberately left
+// in place for one release so rolling back does not wipe a wall display.
+const LEGACY_KEYS = {
+  station: "ptv-station",
+  bus1: "ptv-bus-1",
+  bus2: "ptv-bus-2",
+};
 
 // Bus search tuning. MIN_SEARCH_CHARS must match the Worker.
 const MIN_SEARCH_CHARS = 3;
@@ -185,12 +238,109 @@ const LINE_COLORS: Record<string, LineColor> = {
   "Williamstown": { bg: "#F178AF", fg: "#111111" },
 };
 
-const RULES: Record<string, { maxFill: number }> = {
-  "train": { maxFill: 30 },
-  "bus-1": { maxFill: 12 },
-  "bus-2": { maxFill: 12 },
+// How many rows a card will ever render before the overflow trim measures the
+// real available height. Keyed by mode now rather than by fixed slot name.
+const MAX_FILL: Record<CardMode, number> = { train: 30, bus: 12 };
+
+// ---- Density -------------------------------------------------------------
+// How much a card shows is a function of how big the card actually is, not of
+// which way the device is held. A card is measured, given a density tier, and
+// the stylesheet sheds metadata accordingly - the type size never shrinks to
+// make something fit.
+
+type Density = "comfortable" | "compact" | "glance";
+
+// Below this width a two-column direction split gets too cramped to read, so
+// the columns stack instead. Calibrated against the point where a long
+// destination like "Glen Waverley" starts to ellipsize.
+const SPLIT_MIN_WIDTH = 460;
+
+const DENSITY_MIN = {
+  comfortable: { w: 620, h: 340 },
+  compact: { w: 260, h: 200 },
 };
-const DEFAULT_RULE = { maxFill: 12 };
+
+function densityFor(w: number, h: number): Density {
+  if (w >= DENSITY_MIN.comfortable.w && h >= DENSITY_MIN.comfortable.h) return "comfortable";
+  if (w >= DENSITY_MIN.compact.w && h >= DENSITY_MIN.compact.h) return "compact";
+  return "glance";
+}
+
+// ---- Landscape layout ------------------------------------------------------
+// The wall board has no scrollbar and nobody standing at it to scroll, so when
+// there are more cards than fit legibly it does what a real PIDS board does:
+// keeps the important one pinned and cycles the rest. The floor below is the
+// point past which shrinking stops being an option - a card narrower or
+// shorter than this cannot show a header plus three readable rows.
+
+const CARD_FLOOR = { w: 260, h: 130 }; // header plus three glance rows
+const CYCLE_MS = 15_000;
+const MAX_SECONDARY_COLS = 3;
+
+interface LandscapePlan {
+  cols: number;      // columns of secondary cards
+  rows: number;      // rows in the grid
+  perPage: number;   // secondary cards visible at once
+  pages: number;
+  primaryFr: number; // width share of the primary column
+}
+
+let pageIndex = 0;
+let pageTimer: number | undefined;
+let pageJustTurned = false;
+
+/**
+ * Works out the grid from the space available and the number of cards, rather
+ * than from a fixed template. The primary card takes column one for the full
+ * height; everything else tiles into the columns beside it, adding a column
+ * only while each one stays above the floor.
+ */
+function planLandscape(
+  boardW: number,
+  boardH: number,
+  secondaries: number,
+  primaryWide: boolean,
+): LandscapePlan {
+  const primaryFr = primaryWide ? 1.75 : 1;
+  if (secondaries <= 0) return { cols: 0, rows: 1, perPage: 1, pages: 1, primaryFr };
+
+  // The most rows this height can carry without a card dropping below the floor.
+  const rowsMax = Math.max(1, Math.floor(boardH / CARD_FLOOR.h));
+
+  // Widen only while there is more to place and each column stays readable.
+  let cols = 1;
+  while (cols < MAX_SECONDARY_COLS && cols * rowsMax < secondaries) {
+    const next = cols + 1;
+    if (boardW / (primaryFr + next) < CARD_FLOOR.w) break;
+    cols = next;
+  }
+
+  const perPage = Math.min(secondaries, cols * rowsMax);
+  const pages = Math.ceil(secondaries / perPage);
+  // Only as many rows as the visible page needs. Sizing from rowsMax instead
+  // would leave a short board padded out with empty grid rows.
+  const rows = Math.max(1, Math.min(rowsMax, Math.ceil(perPage / cols)));
+  return { cols, rows, perPage, pages, primaryFr };
+}
+
+function stopCycling(): void {
+  if (pageTimer !== undefined) {
+    clearInterval(pageTimer);
+    pageTimer = undefined;
+  }
+}
+
+function startCycling(pages: number): void {
+  stopCycling();
+  if (pages <= 1) return;
+  pageTimer = window.setInterval(() => {
+    // Never rotate the board out from under someone using a menu.
+    if (anyMenuOpen()) return;
+    pageIndex = (pageIndex + 1) % pages;
+    pageJustTurned = true;
+    render();
+  }, CYCLE_MS);
+}
 
 // ---- Small DOM helpers (typed) --------------------------------------------
 
@@ -233,28 +383,119 @@ function loadStopId(key: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+// ---- Layout: load, migrate, save -------------------------------------------
+
+function newCardId(): string {
+  try {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+      return crypto.randomUUID();
+    }
+  } catch {
+    /* fall through */
+  }
+  return "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function isCardLike(value: unknown): value is Card {
+  if (typeof value !== "object" || value === null) return false;
+  const c = value as Partial<Card>;
+  return (
+    (c.mode === "train" || c.mode === "bus") &&
+    typeof c.stopId === "number" &&
+    Number.isFinite(c.stopId) &&
+    c.stopId > 0
+  );
+}
+
+// Repairs anything the stored layout might be missing: ids, a single primary,
+// no duplicate stops, no more than MAX_CARDS.
+function normaliseCards(input: Card[]): Card[] {
+  const seen = new Set<string>();
+  const out: Card[] = [];
+
+  for (const card of input) {
+    const dedupeKey = `${card.mode}:${card.stopId}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    out.push({
+      ...card,
+      id: typeof card.id === "string" && card.id ? card.id : newCardId(),
+      routeIds: Array.isArray(card.routeIds)
+        ? card.routeIds.filter((n) => typeof n === "number")
+        : undefined,
+    });
+    if (out.length >= MAX_CARDS) break;
+  }
+
+  if (out.length > 0 && !out.some((c) => c.primary)) {
+    const firstTrain = out.find((c) => c.mode === "train");
+    (firstTrain ?? out[0]).primary = true;
+  }
+  // Exactly one primary, whatever the stored layout claimed.
+  let primarySeen = false;
+  for (const card of out) {
+    if (card.primary && !primarySeen) primarySeen = true;
+    else delete card.primary;
+  }
+  if (!primarySeen && out.length > 0) out[0].primary = true;
+
+  return out;
+}
+
+// The pre-cards board: one train station plus two bus stops. Read once, then
+// written back as a layout. The old keys are left alone.
+function migrateLegacyLayout(): Card[] {
+  return [
+    {
+      id: newCardId(),
+      mode: "train",
+      stopId: loadStopId(LEGACY_KEYS.station, DEFAULT_STATION_STOP_ID),
+      primary: true,
+    },
+    { id: newCardId(), mode: "bus", stopId: loadStopId(LEGACY_KEYS.bus1, DEFAULT_BUS_STOP_IDS[0]) },
+    { id: newCardId(), mode: "bus", stopId: loadStopId(LEGACY_KEYS.bus2, DEFAULT_BUS_STOP_IDS[1]) },
+  ];
+}
+
+function loadLayout(): Card[] {
+  const raw = loadSetting(LAYOUT_KEY, "");
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<Layout>;
+      if (parsed && parsed.version === LAYOUT_VERSION && Array.isArray(parsed.cards)) {
+        const cards = normaliseCards(parsed.cards.filter(isCardLike));
+        if (cards.length > 0) return cards;
+      }
+    } catch {
+      /* corrupt layout: fall back to migration rather than a blank board */
+    }
+  }
+  return normaliseCards(migrateLegacyLayout());
+}
+
+function saveLayout(): void {
+  const layout: Layout = { version: LAYOUT_VERSION, cards };
+  saveSetting(LAYOUT_KEY, JSON.stringify(layout));
+}
+
 // ---- Mutable state --------------------------------------------------------
 
-// stop_id of the currently selected train station. Old string-slug values
-// left over from before the stop_id migration will fail parseInt and fall
-// back to the default, which is a soft landing rather than a crash.
-let currentStation = loadStopId("ptv-station", DEFAULT_STATION_STOP_ID);
-
-// stop_id per bus slot, keyed by slot key ("bus-1" / "bus-2").
-const busSelection: Record<string, number> = {};
-for (const slot of BUS_SLOTS) {
-  busSelection[slot.key] = loadStopId(slot.storageKey, slot.defaultStopId);
-}
+const cards: Card[] = loadLayout();
 
 let walkMinutes = parseInt(loadSetting("ptv-walk-minutes", String(WALK_DEFAULT)), 10);
 if (!Number.isFinite(walkMinutes) || walkMinutes < 0) walkMinutes = WALK_DEFAULT;
 
-let menuOpen = false;
+// Which card's picker is open, if any. Only one at a time.
+let stationMenuCardId: string | null = null;
+let busMenuCardId: string | null = null;
 let stationQuery = "";
-let trainCollapsed = false;
-const expandedBuses = new Set<string>();
-
 let lastPayload: BoardPayload | null = null;
+
+// Measured card geometry, keyed by card id. The observer keeps this current so
+// the next render already knows how wide each card will be, rather than
+// guessing from the viewport.
+const cardSize = new Map<string, { w: number; h: number }>();
+let reflowQueued = false;
 
 // Station picker (search menu) data - fetched once at startup, independent
 // of the board refresh cycle.
@@ -262,9 +503,7 @@ let stationPicker: StationPickerEntry[] = [];
 let stationPickerState: LoadState = "loading";
 let stationPickerError: string | null = null;
 
-// Bus picker state. Only one bus menu can be open at a time; busMenuSlot
-// holds its slot key, or null when closed.
-let busMenuSlot: string | null = null;
+// Bus picker state.
 let busQuery = "";
 let busResults: BusSearchResult[] = [];
 let busSearchState: LoadState = "idle";
@@ -273,19 +512,142 @@ let busDebounceTimer: number | undefined;
 let busRequestSeq = 0; // guards against a slow response overwriting a newer one
 let busListEl: HTMLElement | null = null; // updated in place, so typing keeps focus
 
-// The walk filter only applies to trains (your walk to the station).
-function hideWithinFor(stopKey: string): number {
-  return stopKey === "train" ? walkMinutes : 0;
+// ---- Card helpers ----------------------------------------------------------
+
+function routeTypeOf(mode: CardMode): number {
+  return mode === "train" ? 0 : 2;
+}
+
+function stopKeyFor(card: Card): string {
+  return `${routeTypeOf(card.mode)}:${card.stopId}`;
+}
+
+function cardById(id: string | null): Card | undefined {
+  return id === null ? undefined : cards.find((c) => c.id === id);
+}
+
+function boardForCard(card: Card): StopBoard | undefined {
+  return lastPayload?.stops.find((s) => s.key === stopKeyFor(card));
+}
+
+/**
+ * Minutes of walking to allow for before a departure becomes uncatchable.
+ *
+ * An explicit per-card value always wins. Without one, trains inherit the
+ * global filter and buses get 0 - which is exactly what the board did before
+ * cards existed. Phase 7 puts a control on every card.
+ */
+function effectiveWalk(card: Card): number {
+  if (typeof card.walkMinutes === "number" && card.walkMinutes >= 0) {
+    return card.walkMinutes;
+  }
+  return card.mode === "train" ? walkMinutes : 0;
+}
+
+function passesRouteFilter(card: Card, dep: Departure): boolean {
+  if (!card.routeIds || card.routeIds.length === 0) return true;
+  return card.routeIds.includes(dep.routeId);
+}
+
+/** Departures this card should show, after its route and walk filters. */
+function visibleDepartures(card: Card, stop: StopBoard): Departure[] {
+  const hideWithin = effectiveWalk(card);
+  return stop.departures.filter((dep) => {
+    if (!passesRouteFilter(card, dep)) return false;
+    return minutesUntil(dep.estimatedUtc ?? dep.scheduledUtc) >= hideWithin;
+  });
+}
+
+/**
+ * Collapse is per card and persisted. With nothing stored, the primary card is
+ * the one you came to read, so it opens and everything else stays shut - which
+ * is what keeps roughly four cards above the fold on a phone.
+ */
+function isCollapsed(card: Card): boolean {
+  if (typeof card.collapsed === "boolean") return card.collapsed;
+  return !card.primary;
+}
+
+function toggleCollapsed(card: Card): void {
+  card.collapsed = !isCollapsed(card);
+  saveLayout();
+}
+
+/**
+ * Side-by-side direction columns, or stacked with the labels as dividers?
+ * Driven by the card's measured width, so the same card renders correctly at
+ * any size in any orientation. Before the first measurement, fall back to the
+ * board being in grid mode, which is the pre-cards behaviour.
+ */
+function splitSideBySide(card: Card, isGrid: boolean): boolean {
+  const size = cardSize.get(card.id);
+  if (!size) return isGrid;
+  return size.w >= SPLIT_MIN_WIDTH;
+}
+
+// Watches every card and keeps its density attribute current. Density is a
+// pure CSS concern, so most size changes need no re-render at all; only
+// crossing the split threshold changes the DOM, and that schedules one pass.
+const cardObserver = new ResizeObserver((entries) => {
+  let splitFlipped = false;
+
+  for (const entry of entries) {
+    const section = entry.target as HTMLElement;
+    // A rebuild detaches the old sections, and the observer reports those as
+    // 0x0 on their way out. Measuring that would overwrite a good reading with
+    // zeros and bounce the split state, so skip anything already discarded.
+    if (!section.isConnected) continue;
+    const id = section.dataset.cardId;
+    if (!id) continue;
+
+    const w = entry.contentRect.width;
+    const h = entry.contentRect.height;
+    const prev = cardSize.get(id);
+    cardSize.set(id, { w, h });
+
+    section.dataset.density = densityFor(w, h);
+
+    const wasSplit = prev ? prev.w >= SPLIT_MIN_WIDTH : null;
+    if (wasSplit !== null && wasSplit !== (w >= SPLIT_MIN_WIDTH)) splitFlipped = true;
+    if (prev === undefined) splitFlipped = true; // first measurement
+  }
+
+  if (splitFlipped && !reflowQueued && !anyMenuOpen()) {
+    reflowQueued = true;
+    requestAnimationFrame(() => {
+      reflowQueued = false;
+      render();
+    });
+  }
+});
+
+function primaryCard(): Card | undefined {
+  return cards.find((c) => c.primary) ?? cards[0];
 }
 
 function anyMenuOpen(): boolean {
-  return menuOpen || busMenuSlot !== null;
+  return stationMenuCardId !== null || busMenuCardId !== null;
 }
 
 function closeAllMenus(): void {
-  menuOpen = false;
+  stationMenuCardId = null;
   stationQuery = "";
   closeBusMenu();
+}
+
+// Applies a stop change to a card and refreshes, or just repaints if nothing
+// actually moved.
+function setCardStop(card: Card, stopId: number): void {
+  if (card.stopId === stopId) {
+    render();
+    return;
+  }
+  card.stopId = stopId;
+  // A different stop means the old route filter no longer refers to anything.
+  card.routeIds = undefined;
+  saveLayout();
+  must("updated").textContent = "loading";
+  refresh();
 }
 
 // ---- Time helpers ---------------------------------------------------------
@@ -348,14 +710,14 @@ function subsequenceMatch(query: string, text: string): boolean {
 
 // ---- Row + shared UI pieces ------------------------------------------------
 
-function buildRow(stopKey: string, dep: Departure): HTMLDivElement {
+function buildRow(card: Card, dep: Departure): HTMLDivElement {
   const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
   const mins = minutesUntil(bestIso);
-  const hideWithin = hideWithinFor(stopKey);
+  const hideWithin = effectiveWalk(card);
 
   const row = el("div", "row");
 
-  const isTrain = stopKey === "train";
+  const isTrain = card.mode === "train";
   const badge = el("span", "badge " + (isTrain ? "train" : "bus"));
   badge.textContent = isTrain ? dep.route.charAt(0) : dep.route;
   if (isTrain) {
@@ -368,12 +730,12 @@ function buildRow(stopKey: string, dep: Departure): HTMLDivElement {
 
   const dest = el("div", "dest");
   const name = el("span", "name", dep.destination);
+  // Each fact is its own element so the stylesheet can drop the ones a small
+  // card has no room for, rather than the row being rebuilt at every size.
   const meta = el("span", "meta");
-  const bits: string[] = [];
-  if (dep.platform) bits.push("Platform " + dep.platform);
-  bits.push(dep.estimatedUtc ? "Live" : "Scheduled");
-  bits.push(melbTime(new Date(bestIso)));
-  meta.textContent = bits.join(" \u00b7 ");
+  if (dep.platform) meta.appendChild(el("span", "meta-platform", "Platform " + dep.platform));
+  meta.appendChild(el("span", "meta-live", dep.estimatedUtc ? "Live" : "Scheduled"));
+  meta.appendChild(el("span", "meta-time", melbTime(new Date(bestIso))));
   dest.append(name, meta);
 
   const minsEl = el("div", "mins" + (mins <= hideWithin + 1 ? " now" : ""));
@@ -392,7 +754,7 @@ function makeEmptyNote(text: string): HTMLDivElement {
 function makeCollapseButton(collapsed: boolean, onToggle: () => void): HTMLButtonElement {
   const btn = el("button", "collapse-btn" + (collapsed ? " collapsed" : ""));
   btn.type = "button";
-  btn.textContent = "\u25be"; // down chevron
+  btn.textContent = "▾"; // down chevron
   btn.setAttribute("aria-label", collapsed ? "Expand" : "Collapse");
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -445,12 +807,12 @@ async function loadStationPicker(): Promise<void> {
     stationPickerError = err instanceof Error ? err.message : "failed to load stations";
     stationPickerState = "error";
   }
-  if (menuOpen) render();
+  if (stationMenuCardId !== null) render();
 }
 
 // ---- Station picker menu (with search) -------------------------------------
 
-function buildStationMenu(section: HTMLElement): void {
+function buildStationMenu(section: HTMLElement, card: Card): void {
   const menu = el("div", "station-menu");
   menu.addEventListener("click", (e) => e.stopPropagation());
 
@@ -460,14 +822,14 @@ function buildStationMenu(section: HTMLElement): void {
   search.value = stationQuery;
   search.addEventListener("input", () => {
     stationQuery = search.value;
-    refreshStationList(list);
+    refreshStationList(list, card);
   });
   search.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
       const first = list.querySelector<HTMLButtonElement>("button.opt");
       if (first) first.click();
     } else if (e.key === "Escape") {
-      menuOpen = false;
+      stationMenuCardId = null;
       stationQuery = "";
       render();
     }
@@ -477,16 +839,16 @@ function buildStationMenu(section: HTMLElement): void {
 
   menu.append(search, list);
   section.appendChild(menu);
-  refreshStationList(list);
+  refreshStationList(list, card);
 
   setTimeout(() => search.focus(), 0);
 }
 
-function refreshStationList(list: HTMLElement): void {
+function refreshStationList(list: HTMLElement, card: Card): void {
   list.innerHTML = "";
 
   if (stationPickerState === "loading") {
-    list.appendChild(el("div", "no-match", "Loading stations\u2026"));
+    list.appendChild(el("div", "no-match", "Loading stations…"));
     return;
   }
 
@@ -498,7 +860,7 @@ function refreshStationList(list: HTMLElement): void {
     retry.type = "button";
     retry.addEventListener("click", (e) => {
       e.stopPropagation();
-      loadStationPicker().then(() => refreshStationList(list));
+      loadStationPicker().then(() => refreshStationList(list, card));
     });
     list.appendChild(retry);
     return;
@@ -510,20 +872,13 @@ function refreshStationList(list: HTMLElement): void {
     return;
   }
   for (const s of entries) {
-    const btn = el("button", "opt" + (s.key === currentStation ? " active" : ""), s.label);
+    const btn = el("button", "opt" + (s.key === card.stopId ? " active" : ""), s.label);
     btn.type = "button";
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      menuOpen = false;
+      stationMenuCardId = null;
       stationQuery = "";
-      if (s.key !== currentStation) {
-        currentStation = s.key;
-        saveSetting("ptv-station", String(s.key));
-        must("updated").textContent = "loading";
-        refresh();
-      } else {
-        render();
-      }
+      setCardStop(card, s.key);
     });
     list.appendChild(btn);
   }
@@ -532,7 +887,7 @@ function refreshStationList(list: HTMLElement): void {
 // ---- Bus picker: search ------------------------------------------------------
 
 function closeBusMenu(): void {
-  busMenuSlot = null;
+  busMenuCardId = null;
   busQuery = "";
   busResults = [];
   busSearchState = "idle";
@@ -598,7 +953,7 @@ function paintBusList(): void {
     return;
   }
   if (busSearchState === "loading") {
-    list.appendChild(el("div", "no-match", "Searching\u2026"));
+    list.appendChild(el("div", "no-match", "Searching…"));
     return;
   }
   if (busSearchState === "error") {
@@ -617,8 +972,8 @@ function paintBusList(): void {
     return;
   }
 
-  const slotKey = busMenuSlot;
-  const activeStopId = slotKey ? busSelection[slotKey] : -1;
+  const card = cardById(busMenuCardId);
+  const activeStopId = card ? card.stopId : -1;
 
   for (const stop of busResults) {
     const btn = el("button", "opt" + (stop.stopId === activeStopId ? " active" : ""));
@@ -637,18 +992,9 @@ function paintBusList(): void {
 
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      if (!slotKey) return;
-      const changed = busSelection[slotKey] !== stop.stopId;
-      const slot = BUS_SLOTS.find((s) => s.key === slotKey);
+      if (!card) return;
       closeBusMenu();
-      if (changed && slot) {
-        busSelection[slotKey] = stop.stopId;
-        saveSetting(slot.storageKey, String(stop.stopId));
-        must("updated").textContent = "loading";
-        refresh();
-      } else {
-        render();
-      }
+      setCardStop(card, stop.stopId);
     });
     list.appendChild(btn);
   }
@@ -696,11 +1042,16 @@ document.addEventListener("click", () => {
 
 // ---- Section builders ------------------------------------------------------
 
-function buildTrainGrid(section: HTMLElement, stop: StopBoard, split: SplitConfig | null): void {
-  const cap = (RULES["train"] ?? DEFAULT_RULE).maxFill;
-  const hideWithin = hideWithinFor("train");
+function buildTrainGrid(
+  section: HTMLElement,
+  card: Card,
+  stop: StopBoard,
+  split: SplitConfig | null,
+  sideBySide: boolean,
+): void {
+  const cap = MAX_FILL.train;
 
-  const rowsWrap = el("div", "rows" + (split ? " split" : ""));
+  const rowsWrap = el("div", "rows" + (split ? (sideBySide ? " split" : " stacked-split") : ""));
   section.appendChild(rowsWrap);
 
   let colLeft: HTMLElement | null = null;
@@ -718,21 +1069,17 @@ function buildTrainGrid(section: HTMLElement, stop: StopBoard, split: SplitConfi
     return;
   }
 
-  let shown = 0;
-  for (const dep of stop.departures) {
-    if (shown >= cap) break;
-    const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
-    if (minutesUntil(bestIso) < hideWithin) continue;
-
-    const row = buildRow("train", dep);
+  const departures = visibleDepartures(card, stop).slice(0, cap);
+  for (const dep of departures) {
+    const row = buildRow(card, dep);
     if (split) {
       (pickColumn(split, dep) === "right" ? colRight! : colLeft!).appendChild(row);
     } else {
       rowsWrap.appendChild(row);
     }
-    shown++;
   }
-  if (shown === 0) {
+
+  if (departures.length === 0) {
     (split ? colLeft! : rowsWrap).appendChild(makeEmptyNote("No catchable departures right now."));
   } else if (split) {
     for (const col of [colLeft!, colRight!]) {
@@ -741,10 +1088,14 @@ function buildTrainGrid(section: HTMLElement, stop: StopBoard, split: SplitConfi
   }
 }
 
-function buildTrainStacked(section: HTMLElement, stop: StopBoard, split: SplitConfig | null): void {
-  const hideWithin = hideWithinFor("train");
-
-  const rowsWrap = el("div", "rows" + (split ? " stacked-split" : ""));
+function buildTrainStacked(
+  section: HTMLElement,
+  card: Card,
+  stop: StopBoard,
+  split: SplitConfig | null,
+  sideBySide: boolean,
+): void {
+  const rowsWrap = el("div", "rows" + (split ? (sideBySide ? " split" : " stacked-split") : ""));
   section.appendChild(rowsWrap);
 
   if (stop.error) {
@@ -752,16 +1103,12 @@ function buildTrainStacked(section: HTMLElement, stop: StopBoard, split: SplitCo
     return;
   }
 
+  const departures = visibleDepartures(card, stop);
+
   if (!split) {
-    let shown = 0;
-    for (const dep of stop.departures) {
-      if (shown >= PORTRAIT.trainSingleList) break;
-      const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
-      if (minutesUntil(bestIso) < hideWithin) continue;
-      rowsWrap.appendChild(buildRow("train", dep));
-      shown++;
-    }
-    if (shown === 0) rowsWrap.appendChild(makeEmptyNote("No catchable departures right now."));
+    const shown = departures.slice(0, PORTRAIT.trainSingleList);
+    for (const dep of shown) rowsWrap.appendChild(buildRow(card, dep));
+    if (shown.length === 0) rowsWrap.appendChild(makeEmptyNote("No catchable departures right now."));
     return;
   }
 
@@ -775,13 +1122,11 @@ function buildTrainStacked(section: HTMLElement, stop: StopBoard, split: SplitCo
   }
 
   const counts: Record<ColumnSide, number> = { left: 0, right: 0 };
-  for (const dep of stop.departures) {
+  for (const dep of departures) {
     if (counts.left >= PORTRAIT.trainPerGroup && counts.right >= PORTRAIT.trainPerGroup) break;
-    const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
-    if (minutesUntil(bestIso) < hideWithin) continue;
     const side = pickColumn(split, dep);
     if (counts[side] >= PORTRAIT.trainPerGroup) continue;
-    colBySide[side].appendChild(buildRow("train", dep));
+    colBySide[side].appendChild(buildRow(card, dep));
     counts[side]++;
   }
 
@@ -792,8 +1137,7 @@ function buildTrainStacked(section: HTMLElement, stop: StopBoard, split: SplitCo
   }
 }
 
-function buildBusGrid(section: HTMLElement, stop: StopBoard): void {
-  const cap = (RULES[stop.key] ?? DEFAULT_RULE).maxFill;
+function buildBusGrid(section: HTMLElement, card: Card, stop: StopBoard): void {
   const rowsWrap = el("div", "rows");
   section.appendChild(rowsWrap);
 
@@ -802,47 +1146,115 @@ function buildBusGrid(section: HTMLElement, stop: StopBoard): void {
     return;
   }
 
-  let shown = 0;
-  for (const dep of stop.departures) {
-    if (shown >= cap) break;
-    if (minutesUntil(dep.estimatedUtc ?? dep.scheduledUtc) < 0) continue;
-    rowsWrap.appendChild(buildRow(stop.key, dep));
-    shown++;
+  const departures = visibleDepartures(card, stop).slice(0, MAX_FILL.bus);
+  for (const dep of departures) rowsWrap.appendChild(buildRow(card, dep));
+  if (departures.length === 0) {
+    rowsWrap.appendChild(makeEmptyNote("No catchable departures right now."));
   }
-  if (shown === 0) rowsWrap.appendChild(makeEmptyNote("No catchable departures right now."));
+}
+
+/**
+ * The departures a collapsed card should advertise. A split station shows the
+ * next service in each direction - two chronological departures could both be
+ * heading the same way, which is exactly the case where a summary misleads.
+ * Everything else shows the next two.
+ */
+function summaryDepartures(
+  split: SplitConfig | null,
+  departures: Departure[],
+  limit: number,
+): Departure[] {
+  if (!split) return departures.slice(0, limit);
+
+  const picked: Departure[] = [];
+  for (const side of orderedSides(split)) {
+    const next = departures.find((dep) => pickColumn(split, dep) === side);
+    if (next) picked.push(next);
+  }
+  return picked.length > 0 ? picked.slice(0, limit) : departures.slice(0, limit);
+}
+
+/**
+ * The inline summary in a collapsed card's header. Trains get their line
+ * colour, buses their route number, so a glance at a shut card still tells you
+ * which service the countdown belongs to.
+ */
+function buildSummary(card: Card, departures: Departure[]): HTMLElement {
+  const times = el("span", "h2-times");
+  for (const dep of departures) {
+    const chip = el("span", "h2-chip");
+    const badge = el("span", "h2-badge " + (card.mode === "train" ? "train" : "bus"));
+    badge.textContent = card.mode === "train" ? dep.route.charAt(0) : dep.route;
+    if (card.mode === "train") {
+      const c = lineColor(dep.route);
+      if (c) {
+        badge.style.background = c.bg;
+        badge.style.color = c.fg;
+      }
+    }
+    const mins = minutesUntil(dep.estimatedUtc ?? dep.scheduledUtc);
+    chip.append(badge, el("span", "h2-mins", mins + "m"));
+    times.appendChild(chip);
+  }
+  return times;
+}
+
+// Portrait: a train card collapses like every other card now, summarising the
+// next service in each direction rather than going blank.
+function buildTrainPortrait(
+  section: HTMLElement,
+  card: Card,
+  stop: StopBoard,
+  h2: HTMLElement,
+  split: SplitConfig | null,
+): void {
+  const collapsed = isCollapsed(card);
+  const catchable = stop.error ? [] : visibleDepartures(card, stop);
+
+  let times: HTMLElement;
+  if (stop.error) {
+    times = el("span", "h2-times none", "no data");
+  } else if (catchable.length === 0) {
+    times = el("span", "h2-times none", "none");
+  } else {
+    times = buildSummary(card, summaryDepartures(split, catchable, PORTRAIT.busSummaryTimes));
+  }
+
+  h2.append(times, makeCollapseButton(collapsed, () => {
+    toggleCollapsed(card);
+    render();
+  }));
+
+  if (collapsed) return;
+  buildTrainStacked(section, card, stop, split, splitSideBySide(card, false));
 }
 
 // Portrait: bus header shows next times inline plus a right-side collapse
 // chevron matching the train header. The chevron is the collapse control.
-function buildBusPortrait(section: HTMLElement, stop: StopBoard, h2: HTMLElement): void {
-  const expanded = expandedBuses.has(stop.key);
+function buildBusPortrait(
+  section: HTMLElement,
+  card: Card,
+  stop: StopBoard,
+  h2: HTMLElement,
+): void {
+  const collapsed = isCollapsed(card);
+  const catchable = stop.error ? [] : visibleDepartures(card, stop);
 
-  const times = el("span", "h2-times");
-  const catchable = (stop.departures ?? []).filter(
-    (dep) => minutesUntil(dep.estimatedUtc ?? dep.scheduledUtc) >= 0,
-  );
+  let times: HTMLElement;
   if (stop.error) {
-    times.classList.add("none");
-    times.textContent = "no data";
+    times = el("span", "h2-times none", "no data");
   } else if (catchable.length === 0) {
-    times.classList.add("none");
-    times.textContent = "none";
+    times = el("span", "h2-times none", "none");
   } else {
-    for (const dep of catchable.slice(0, PORTRAIT.busSummaryTimes)) {
-      const mins = minutesUntil(dep.estimatedUtc ?? dep.scheduledUtc);
-      times.appendChild(el("span", undefined, dep.route + " " + mins + "m"));
-    }
+    times = buildSummary(card, catchable.slice(0, PORTRAIT.busSummaryTimes));
   }
 
-  const collapse = makeCollapseButton(!expanded, () => {
-    if (expandedBuses.has(stop.key)) expandedBuses.delete(stop.key);
-    else expandedBuses.add(stop.key);
+  h2.append(times, makeCollapseButton(collapsed, () => {
+    toggleCollapsed(card);
     render();
-  });
+  }));
 
-  h2.append(times, collapse);
-
-  if (!expanded) return;
+  if (collapsed) return;
 
   const rowsWrap = el("div", "rows");
   section.appendChild(rowsWrap);
@@ -852,76 +1264,168 @@ function buildBusPortrait(section: HTMLElement, stop: StopBoard, h2: HTMLElement
     return;
   }
   const shownDeps = catchable.slice(0, PORTRAIT.busExpandedRows);
-  for (const dep of shownDeps) rowsWrap.appendChild(buildRow(stop.key, dep));
+  for (const dep of shownDeps) rowsWrap.appendChild(buildRow(card, dep));
   if (shownDeps.length === 0) rowsWrap.appendChild(makeEmptyNote("No departures"));
 }
 
 // ---- Render ---------------------------------------------------------------
 
+function buildCardSection(card: Card, isGrid: boolean): HTMLElement | null {
+  const stop = boardForCard(card);
+  if (!stop) return null; // payload predates a just-changed card; next refresh fixes it
+
+  const isTrain = card.mode === "train";
+
+  const section = el("section");
+  section.dataset.cardId = card.id;
+  if (!isGrid && isCollapsed(card)) section.dataset.collapsed = "true";
+  const known = cardSize.get(card.id);
+  if (known) section.dataset.density = densityFor(known.w, known.h);
+
+  const h2 = el("h2", "picker");
+  const nameEl = el("span", "h2-name");
+
+  // Both train and bus headers are pickers; only the menu differs.
+  nameEl.append(el("span", undefined, stop.label), el("span", "caret", "\u25be"));
+  nameEl.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const wasOpen = isTrain
+      ? stationMenuCardId === card.id
+      : busMenuCardId === card.id;
+    closeAllMenus();
+    if (!wasOpen) {
+      if (isTrain) stationMenuCardId = card.id;
+      else busMenuCardId = card.id;
+    }
+    render();
+  });
+  h2.appendChild(nameEl);
+  section.appendChild(h2);
+
+  if (isTrain) {
+    const split = splitForType(stop.stationType);
+    // Height-constrained cards fill and get trimmed; free-flowing ones use a
+    // fixed cap. Whether the columns sit side by side is a separate,
+    // width-driven question.
+    if (isGrid) buildTrainGrid(section, card, stop, split, splitSideBySide(card, isGrid));
+    else buildTrainPortrait(section, card, stop, h2, split);
+  } else {
+    if (isGrid) buildBusGrid(section, card, stop);
+    else buildBusPortrait(section, card, stop, h2);
+  }
+
+  if (isTrain && stationMenuCardId === card.id) buildStationMenu(section, card);
+  if (!isTrain && busMenuCardId === card.id) buildBusMenu(section);
+
+  return section;
+}
+
+// Page indicator for a board that is cycling. Clickable, so the dots double as
+// a way to jump straight to a page rather than waiting for it to come round.
+function buildPageDots(pages: number): HTMLElement {
+  const wrap = el("div", "page-dots");
+  for (let i = 0; i < pages; i++) {
+    const dot = el("button", "page-dot" + (i === pageIndex ? " on" : ""));
+    dot.type = "button";
+    dot.setAttribute("aria-label", `Page ${i + 1} of ${pages}`);
+    dot.addEventListener("click", (e) => {
+      e.stopPropagation();
+      pageIndex = i;
+      pageJustTurned = true;
+      startCycling(pages); // restart the dwell so a tap gets a full interval
+      render();
+    });
+    wrap.appendChild(dot);
+  }
+  return wrap;
+}
+
+/** Is this card's content wide enough to deserve the larger column? */
+function wantsWideColumn(card: Card): boolean {
+  if (card.mode !== "train") return false;
+  const stop = boardForCard(card);
+  return splitForType(stop?.stationType) !== null;
+}
+
 function render(): void {
   if (!lastPayload) return;
   const board = must("board");
+  // Stop watching the sections about to be thrown away; the fresh ones are
+  // observed again as they are appended.
+  cardObserver.disconnect();
   board.innerHTML = "";
   busListEl = null; // the old list node is about to be discarded
 
   const isGrid = getComputedStyle(board).display === "grid";
 
-  for (const stop of lastPayload.stops) {
-    const isTrain = stop.key === "train";
+  let ordered: Card[];
+  let plan: LandscapePlan | null = null;
 
-    const section = el("section");
-    section.dataset.key = stop.key;
+  if (isGrid) {
+    const primary = primaryCard();
+    const secondaries = cards.filter((c) => c !== primary);
+    const rect = board.getBoundingClientRect();
+    plan = planLandscape(
+      rect.width,
+      rect.height,
+      secondaries.length,
+      primary ? wantsWideColumn(primary) : false,
+    );
 
-    const h2 = el("h2", "picker");
-    const nameEl = el("span", "h2-name");
+    if (pageIndex >= plan.pages) pageIndex = 0;
+    const from = pageIndex * plan.perPage;
+    const page =
+      plan.pages > 1 ? secondaries.slice(from, from + plan.perPage) : secondaries;
 
-    // Both train and bus headers are pickers now; only the menu differs.
-    nameEl.append(el("span", undefined, stop.label), el("span", "caret", "\u25be"));
-    nameEl.addEventListener("click", (e) => {
-      e.stopPropagation();
-      if (isTrain) {
-        const wasOpen = menuOpen;
-        closeAllMenus();
-        menuOpen = !wasOpen;
+    board.style.gridTemplateColumns =
+      `${plan.primaryFr}fr` + (plan.cols > 0 ? ` repeat(${plan.cols}, 1fr)` : "");
+    board.style.gridTemplateRows = `repeat(${plan.rows}, 1fr)`;
+
+    ordered = primary ? [primary, ...page] : page;
+  } else {
+    // Portrait scrolls, so every card is present and the grid is not in play.
+    board.style.gridTemplateColumns = "";
+    board.style.gridTemplateRows = "";
+    ordered = cards;
+    stopCycling();
+  }
+
+  ordered.forEach((card, i) => {
+    const section = buildCardSection(card, isGrid);
+    if (!section) return;
+
+    if (isGrid && plan) {
+      if (i === 0) {
+        section.dataset.role = "primary";
+        section.style.gridColumn = "1";
+        section.style.gridRow = `1 / span ${plan.rows}`;
       } else {
-        const wasOpen = busMenuSlot === stop.key;
-        closeAllMenus();
-        if (!wasOpen) busMenuSlot = stop.key;
+        const k = i - 1;
+        section.dataset.role = "secondary";
+        section.style.gridColumn = String(2 + (k % plan.cols));
+        section.style.gridRow = String(1 + Math.floor(k / plan.cols));
       }
-      render();
-    });
-    h2.appendChild(nameEl);
-
-    if (isTrain && !isGrid) {
-      h2.appendChild(makeCollapseButton(trainCollapsed, () => {
-        trainCollapsed = !trainCollapsed;
-        render();
-      }));
     }
-    section.appendChild(h2);
-
-    if (isTrain) {
-      const showBody = isGrid || !trainCollapsed;
-      if (showBody) {
-        const split = splitForType(stop.stationType);
-        if (isGrid) buildTrainGrid(section, stop, split);
-        else buildTrainStacked(section, stop, split);
-      }
-    } else {
-      if (isGrid) buildBusGrid(section, stop);
-      else buildBusPortrait(section, stop, h2);
-    }
-
-    if (isTrain && menuOpen) buildStationMenu(section);
-    if (!isTrain && busMenuSlot === stop.key) buildBusMenu(section);
 
     board.appendChild(section);
+    cardObserver.observe(section);
+  });
+
+  if (isGrid && plan && plan.pages > 1) {
+    board.appendChild(buildPageDots(plan.pages));
+    startCycling(plan.pages);
+  } else {
+    stopCycling();
   }
+
+  // Only the render that follows a page turn animates; a routine refresh must
+  // not make the whole board flicker.
+  board.classList.toggle("page-turn", pageJustTurned);
+  pageJustTurned = false;
 
   trimOverflow(isGrid);
   updateWalkUI();
 }
-
 // ---- Walk filter stepper ----------------------------------------------------
 
 function updateWalkUI(): void {
@@ -960,11 +1464,8 @@ let lastWalkValue = walkMinutes > 0 ? walkMinutes : WALK_DEFAULT;
 // ---- Data fetch -----------------------------------------------------------
 
 function boardUrl(): string {
-  const params = new URLSearchParams({ station: String(currentStation) });
-  BUS_SLOTS.forEach((slot, i) => {
-    params.set(`bus${i + 1}`, String(busSelection[slot.key]));
-  });
-  return "/api/board?" + params.toString();
+  const stops = cards.map(stopKeyFor).join(",");
+  return "/api/board?stops=" + encodeURIComponent(stops);
 }
 
 async function refresh(): Promise<void> {
@@ -1001,6 +1502,10 @@ async function requestWakeLock(): Promise<void> {
 function init(): void {
   setInterval(tickClock, 1000);
   tickClock();
+
+  // Write the migrated layout back on first run, so the card list becomes the
+  // stored source of truth even if the user never changes anything.
+  saveLayout();
 
   must<HTMLButtonElement>("walk-minus").addEventListener("click", (e) => {
     e.stopPropagation();

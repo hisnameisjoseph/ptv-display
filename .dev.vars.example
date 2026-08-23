@@ -1,3 +1,14 @@
 # Copy to .dev.vars for local development (never commit .dev.vars)
 PTV_DEV_ID=your-numeric-dev-id
 PTV_API_KEY=your-signing-key
+
+# Mock mode: answer departures locally instead of calling PTV.
+# Leave unset or empty for real data. Scenarios:
+#   1 | normal      typical service
+#   empty           no departures at all
+#   error           upstream failure
+#   sparse          barely any service
+#   delay           everything running late
+#   cancel          the imminent departure vanishes
+#   noestimates     timetable only, no live estimates
+# PTV_MOCK=1
