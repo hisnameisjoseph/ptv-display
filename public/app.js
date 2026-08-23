@@ -1439,6 +1439,28 @@ function buildUndoToast() {
     return toast;
 }
 // ---- Render ---------------------------------------------------------------
+/**
+ * The name a card wears in its header.
+ *
+ * Every metro station name ends in "Station", so the word carries no
+ * information on a card that is already unmistakably a train - and the merged
+ * pairs are much the longest labels on the board. Only a trailing occurrence
+ * goes, and only on train cards, so a bus stop named "Southern Cross
+ * Station/Collins St" keeps its name intact. The picker, the search results
+ * and the stored label all stay full: you want certainty when choosing a stop,
+ * and brevity once it is yours.
+ */
+function cardTitle(card, stop) {
+    if (card.mode !== "train")
+        return stop.label;
+    return stop.label
+        .split(" / ")
+        .map((part) => {
+        const trimmed = part.replace(/\s+Station$/i, "").trim();
+        return trimmed || part; // a stop named only "Station" keeps its name
+    })
+        .join(" / ");
+}
 function buildCardSection(card, index, isGrid) {
     const stop = boardForCard(card);
     if (!stop)
@@ -1454,7 +1476,7 @@ function buildCardSection(card, index, isGrid) {
     const h2 = el("h2", "picker");
     const nameEl = el("span", "h2-name");
     // Both train and bus headers are pickers; only the menu differs.
-    nameEl.append(el("span", undefined, stop.label), el("span", "caret", "\u25be"));
+    nameEl.append(el("span", undefined, cardTitle(card, stop)), el("span", "caret", "\u25be"));
     nameEl.addEventListener("click", (e) => {
         e.stopPropagation();
         const wasOpen = isTrain
