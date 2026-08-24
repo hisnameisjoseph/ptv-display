@@ -932,7 +932,11 @@ function trimOverflow(isGrid: boolean): void {
   document.querySelectorAll<HTMLElement>("#board section").forEach((section) => {
     const rows = section.querySelector<HTMLElement>(".rows");
     if (!rows) return;
-    const isSplit = rows.classList.contains("split");
+    // Both tokens mean "this card holds .col children". Testing only for
+    // "split" made a stacked card look unsplit, and the else branch below then
+    // removed whole direction columns instead of trimming rows inside them.
+    const isSplit =
+      rows.classList.contains("split") || rows.classList.contains("stacked-split");
     const cols = isSplit ? [...rows.querySelectorAll<HTMLElement>(".col")] : null;
     let guard = 80;
     while (guard-- > 0 && section.scrollHeight > section.clientHeight) {
@@ -1101,6 +1105,31 @@ function scheduleBusSearch(): void {
   }, BUS_SEARCH_DEBOUNCE_MS);
 }
 
+/**
+ * The dimmer second line of a picker row: "Footscray · 216, 220, 402 +2".
+ * Either half may be missing, and both may be, in which case the row is just
+ * the stop name. Keeping this off the name's own line is what lets a long
+ * name stay readable in a narrow menu — nothing has to shrink to make room.
+ */
+function optMetaLine(suburb: string | null, routes: string[]): string {
+  const parts: string[] = [];
+  if (suburb) parts.push(suburb);
+  if (routes.length > 0) {
+    const shown = routes.slice(0, BUS_ROUTES_SHOWN).join(", ");
+    const extra = routes.length - BUS_ROUTES_SHOWN;
+    parts.push(shown + (extra > 0 ? ` +${extra}` : ""));
+  }
+  return parts.join(" · ");
+}
+
+/** Name over meta, as one shrinkable block beside the mode badge. */
+function optTextBlock(label: string, meta: string): HTMLElement {
+  const text = el("span", "opt-text");
+  text.appendChild(el("span", "opt-name", label));
+  if (meta) text.appendChild(el("span", "opt-routes", meta));
+  return text;
+}
+
 // Repaints only the results list, never the whole board, so the input keeps
 // focus and the caret position while results stream in.
 function paintBusList(): void {
@@ -1141,16 +1170,7 @@ function paintBusList(): void {
     const btn = el("button", "opt" + (stop.stopId === activeStopId ? " active" : ""));
     btn.type = "button";
 
-    btn.appendChild(el("span", undefined, stop.label));
-
-    // Route numbers inline, in the dimmer meta treatment used on rows.
-    if (stop.routes.length > 0) {
-      const shown = stop.routes.slice(0, BUS_ROUTES_SHOWN).join(", ");
-      const extra = stop.routes.length - BUS_ROUTES_SHOWN;
-      btn.appendChild(
-        el("span", "opt-routes", shown + (extra > 0 ? ` +${extra}` : "")),
-      );
-    }
+    btn.appendChild(optTextBlock(stop.label, optMetaLine(stop.suburb, stop.routes)));
 
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1508,14 +1528,10 @@ function paintAddList(): void {
     btn.disabled = already;
 
     btn.appendChild(el("span", "opt-mode " + hit.mode, hit.mode === "train" ? "Train" : "Bus"));
-    btn.appendChild(el("span", undefined, hit.label));
-    if (already) {
-      btn.appendChild(el("span", "opt-routes", "Added"));
-    } else if (hit.routes.length > 0) {
-      const shown = hit.routes.slice(0, BUS_ROUTES_SHOWN).map((r) => r.label).join(", ");
-      const extra = hit.routes.length - BUS_ROUTES_SHOWN;
-      btn.appendChild(el("span", "opt-routes", shown + (extra > 0 ? ` +${extra}` : "")));
-    }
+    btn.appendChild(
+      optTextBlock(hit.label, optMetaLine(hit.suburb, hit.routes.map((r) => r.label))),
+    );
+    if (already) btn.appendChild(el("span", "opt-flag", "Added"));
 
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -1788,6 +1804,13 @@ function buildCardSection(card: Card, index: number, isGrid: boolean): HTMLEleme
     if (isGrid) buildBusGrid(section, card, stop);
     else buildBusPortrait(section, card, stop, h2);
   }
+
+  // A card clips its own content so the rows stay inside the rounded corners.
+  // A dropdown is taller than a collapsed card, so it has to be allowed out —
+  // otherwise the results are cropped to the header and the picker looks dead.
+  const menuOpen =
+    (isTrain && stationMenuCardId === card.id) || (!isTrain && busMenuCardId === card.id);
+  if (menuOpen) section.classList.add("menu-open");
 
   if (isTrain && stationMenuCardId === card.id) buildStationMenu(section, card);
   if (!isTrain && busMenuCardId === card.id) buildBusMenu(section);
