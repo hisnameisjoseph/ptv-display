@@ -764,7 +764,6 @@ function addCard(hit: SearchHit): void {
   });
   saveLayout();
   closeAllMenus();
-  must("updated").textContent = "loading";
   refresh();
 }
 
@@ -808,7 +807,6 @@ function setCardStop(card: Card, stopId: number): void {
   // A different stop means the old route filter no longer refers to anything.
   card.routeIds = undefined;
   saveLayout();
-  must("updated").textContent = "loading";
   refresh();
 }
 
@@ -822,10 +820,6 @@ function melbTime(date: Date): string {
 
 function minutesUntil(iso: string): number {
   return Math.round((new Date(iso).getTime() - Date.now()) / 60000);
-}
-
-function tickClock(): void {
-  must("clock").textContent = melbTime(new Date());
 }
 
 // ---- Line colours & column classification ---------------------------------
@@ -872,6 +866,17 @@ function subsequenceMatch(query: string, text: string): boolean {
 
 // ---- Row + shared UI pieces ------------------------------------------------
 
+/** A service is only called late once it has slipped past rounding noise. */
+const LATE_THRESHOLD_MIN = 2;
+
+/**
+ * The countdown, then the service.
+ *
+ * The numeral sits on a rail of its own on the left, larger and heavier than
+ * anything else in the row, because it is the one thing being read. Everything
+ * that qualifies it - the line, where it is going, which platform, whether the
+ * time can be trusted - follows to its right.
+ */
 function buildRow(card: Card, dep: Departure): HTMLDivElement {
   const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
   const mins = minutesUntil(bestIso);
@@ -879,6 +884,11 @@ function buildRow(card: Card, dep: Departure): HTMLDivElement {
 
   const row = el("div", "row");
 
+  // ---- rail: numeral over its unit
+  const rail = el("div", "rail" + (mins <= hideWithin + 1 ? " now" : ""));
+  rail.append(el("span", "mins", String(mins)), el("span", "unit", "min"));
+
+  // ---- body: line badge and destination, then the qualifying metadata
   const isTrain = card.mode === "train";
   const badge = el("span", "badge " + (isTrain ? "train" : "bus"));
   badge.textContent = isTrain ? dep.route.charAt(0) : dep.route;
@@ -891,19 +901,46 @@ function buildRow(card: Card, dep: Departure): HTMLDivElement {
   }
 
   const dest = el("div", "dest");
-  const name = el("span", "name", dep.destination);
+  dest.append(badge, el("span", "name", dep.destination));
+
   // Each fact is its own element so the stylesheet can drop the ones a small
   // card has no room for, rather than the row being rebuilt at every size.
   const meta = el("span", "meta");
-  if (dep.platform) meta.appendChild(el("span", "meta-platform", "Platform " + dep.platform));
-  meta.appendChild(el("span", "meta-live", dep.estimatedUtc ? "Live" : "Scheduled"));
-  meta.appendChild(el("span", "meta-time", melbTime(new Date(bestIso))));
-  dest.append(name, meta);
+  if (dep.platform) {
+    // Mixed weight inside one line: the number is the part being looked for.
+    const plat = el("span", "meta-platform");
+    plat.append("Platform ", el("b", undefined, dep.platform));
+    meta.appendChild(plat);
+  }
 
-  const minsEl = el("div", "mins" + (mins <= hideWithin + 1 ? " now" : ""));
-  minsEl.innerHTML = mins + "<small>min</small>";
+  const lateBy = dep.estimatedUtc
+    ? Math.round(
+        (new Date(dep.estimatedUtc).getTime() - new Date(dep.scheduledUtc).getTime()) / 60000,
+      )
+    : 0;
 
-  row.append(badge, dest, minsEl);
+  if (lateBy >= LATE_THRESHOLD_MIN) {
+    // Colour alone would say "something is off" without saying what, so the
+    // delay is spelled out and the time it replaced is struck through beside
+    // it - you can see both what was promised and what is actually happening.
+    meta.appendChild(el("span", "meta-status late", `${lateBy} min late`));
+    const time = el("span", "meta-time");
+    time.append(
+      el("s", undefined, melbTime(new Date(dep.scheduledUtc))),
+      el("span", undefined, " " + melbTime(new Date(bestIso))),
+    );
+    meta.appendChild(time);
+  } else {
+    meta.appendChild(
+      el("span", dep.estimatedUtc ? "meta-status live" : "meta-status", dep.estimatedUtc ? "Live" : "Scheduled"),
+    );
+    meta.appendChild(el("span", "meta-time", melbTime(new Date(bestIso))));
+  }
+
+  const body = el("div", "body");
+  body.append(dest, meta);
+
+  row.append(rail, body);
   return row;
 }
 
@@ -1412,7 +1449,11 @@ function buildTrainPortrait(
     times = buildSummary(card, summaryDepartures(split, catchable, PORTRAIT.busSummaryTimes));
   }
 
-  h2.append(times, makeCollapseButton(collapsed, () => {
+  // A shut card's header stands in for the rows it is hiding, so it carries the
+  // next service. An open card shows those rows immediately below, so repeating
+  // them here would buy nothing and cost the stop name the width it needs.
+  if (collapsed) h2.appendChild(times);
+  h2.appendChild(makeCollapseButton(collapsed, () => {
     toggleCollapsed(card);
     render();
   }));
@@ -1441,7 +1482,11 @@ function buildBusPortrait(
     times = buildSummary(card, catchable.slice(0, PORTRAIT.busSummaryTimes));
   }
 
-  h2.append(times, makeCollapseButton(collapsed, () => {
+  // A shut card's header stands in for the rows it is hiding, so it carries the
+  // next service. An open card shows those rows immediately below, so repeating
+  // them here would buy nothing and cost the stop name the width it needs.
+  if (collapsed) h2.appendChild(times);
+  h2.appendChild(makeCollapseButton(collapsed, () => {
     toggleCollapsed(card);
     render();
   }));
@@ -1713,12 +1758,19 @@ function buildSettingsSheet(host: HTMLElement, card: Card, stop: StopBoard): voi
 /** Small chips in the card header showing filters that are actually on, so a
  *  card never hides departures for a reason you cannot see. */
 function buildFilterChips(card: Card): HTMLElement | null {
-  const bits: string[] = [];
   const walk = effectiveWalk(card);
-  if (walk > 0) bits.push("\u25b8 " + walk + " min walk");
-  if (card.routeIds && card.routeIds.length > 0) bits.push(card.routeIds.length + " routes");
-  if (bits.length === 0) return null;
-  return el("span", "filter-chip", bits.join(" \u00b7 "));
+  const routes = card.routeIds?.length ?? 0;
+  if (walk === 0 && routes === 0) return null;
+
+  // The number carries the meaning, so it takes the heavier weight and the
+  // word beside it stays quiet - the house treatment for a value plus a unit.
+  const chip = el("span", "filter-chip");
+  if (walk > 0) chip.append(el("b", undefined, String(walk)), " min walk");
+  if (routes > 0) {
+    if (walk > 0) chip.appendChild(el("span", "chip-sep", "\u00b7"));
+    chip.append(el("b", undefined, String(routes)), " routes");
+  }
+  return chip;
 }
 
 function buildUndoToast(): HTMLElement {
@@ -1950,17 +2002,13 @@ function boardUrl(): string {
 }
 
 async function refresh(): Promise<void> {
-  const dot = must("dot");
-  const updated = must("updated");
   try {
     const res = await fetch(boardUrl());
     if (!res.ok) throw new Error("HTTP " + res.status);
     lastPayload = (await res.json()) as BoardPayload;
-    dot.className = "";
-    updated.textContent = "Updated " + melbTime(new Date());
   } catch {
-    dot.className = "down";
-    updated.textContent = "connection lost";
+    // The previous payload stays on screen. Departure rows carry their own
+    // absolute times, so a stale board is still readable rather than blank.
   }
   render();
 }
@@ -1981,9 +2029,6 @@ async function requestWakeLock(): Promise<void> {
 // ---- Wiring / init --------------------------------------------------------
 
 function init(): void {
-  setInterval(tickClock, 1000);
-  tickClock();
-
   // Write the migrated layout back on first run, so the card list becomes the
   // stored source of truth even if the user never changes anything.
   saveLayout();
