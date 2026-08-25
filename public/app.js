@@ -777,6 +777,30 @@ function melbTime(date) {
 function minutesUntil(iso) {
     return Math.round((new Date(iso).getTime() - Date.now()) / 60000);
 }
+/**
+ * A countdown, split into what sits on the rail and what sits under it.
+ *
+ * Under an hour it is the plain minute count. Past that the numeral would need
+ * a third digit - which is what pushed "279" out of its rail and up against the
+ * edge of the card - and nobody plans around 279 minutes anyway. The hour takes
+ * the numeral, the remainder becomes the unit, and the exact departure time is
+ * on the metadata line either way.
+ */
+function countdownParts(mins) {
+    if (mins < 60)
+        return { value: String(mins), unit: "min" };
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return { value: h + "h", unit: m === 0 ? "hrs" : m + " m" };
+}
+/** The same countdown on one line, for a collapsed card's header. */
+function countdownShort(mins) {
+    if (mins < 60)
+        return mins + "m";
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return m === 0 ? h + "h" : h + "h" + String(m).padStart(2, "0");
+}
 // ---- Line colours & column classification ---------------------------------
 function lineColor(routeName) {
     const name = (routeName || "").toLowerCase();
@@ -838,7 +862,8 @@ function buildRow(card, dep) {
     const row = el("div", "row");
     // ---- rail: numeral over its unit
     const rail = el("div", "rail" + (mins <= hideWithin + 1 ? " now" : ""));
-    rail.append(el("span", "mins", String(mins)), el("span", "unit", "min"));
+    const countdown = countdownParts(mins);
+    rail.append(el("span", "mins", countdown.value), el("span", "unit", countdown.unit));
     // ---- body: line badge and destination, then the qualifying metadata
     const isTrain = card.mode === "train";
     const badge = el("span", "badge " + (isTrain ? "train" : "bus"));
@@ -1162,6 +1187,11 @@ function buildTrainGrid(section, card, stop, split, sideBySide) {
     const cap = MAX_FILL.train;
     const rowsWrap = el("div", "rows" + (split ? (sideBySide ? " split" : " stacked-split") : ""));
     section.appendChild(rowsWrap);
+    // A terminus has one direction, so it has no split - but without a band it is
+    // the only card on the board that opens with a bare row where every other
+    // card opens with a heading.
+    if (!split)
+        rowsWrap.appendChild(el("h3", undefined, "All services"));
     let colLeft = null;
     let colRight = null;
     if (split) {
@@ -1285,7 +1315,7 @@ function buildSummary(card, departures) {
             }
         }
         const mins = minutesUntil(dep.estimatedUtc ?? dep.scheduledUtc);
-        chip.append(badge, el("span", "h2-mins", mins + "m"));
+        chip.append(badge, el("span", "h2-mins", countdownShort(mins)));
         times.appendChild(chip);
     }
     return times;
@@ -1634,7 +1664,10 @@ function buildCardSection(card, index, isGrid) {
         render();
     });
     h2.appendChild(nameEl);
-    const chip = buildFilterChips(card);
+    // A shut card is already spending its header on the summary times, and the
+    // chip takes the width the stop name needs. It comes back the moment the card
+    // is opened, and the summary is computed from the filtered list either way.
+    const chip = isGrid || !isCollapsed(card) ? buildFilterChips(card) : null;
     if (chip)
         h2.appendChild(chip);
     section.appendChild(h2);
@@ -1688,6 +1721,24 @@ function wantsWideColumn(card) {
     const stop = boardForCard(card);
     return splitForType(stop?.stationType) !== null;
 }
+/**
+ * The rail is one column shared by every row in a card, so it has to be as wide
+ * as the widest countdown that card is showing. Measured after the card is in
+ * the document rather than fixed in CSS: a daytime board is all two-digit
+ * minutes and should keep the narrow rail and give the width to the
+ * destination, so only a card carrying hour-scale times pays for a wider one.
+ */
+function sizeRail(section) {
+    let widest = 0;
+    for (const rail of section.querySelectorAll(".rail")) {
+        widest = Math.max(widest, rail.scrollWidth);
+    }
+    if (widest === 0)
+        return;
+    const floor = parseFloat(getComputedStyle(section).getPropertyValue("--rail-w")) || 0;
+    if (widest > floor)
+        section.style.setProperty("--rail-w", Math.ceil(widest) + "px");
+}
 function render() {
     if (!lastPayload)
         return;
@@ -1740,6 +1791,7 @@ function render() {
             }
         }
         board.appendChild(section);
+        sizeRail(section);
         cardObserver.observe(section);
     });
     // The add tile only exists in edit mode, and never competes for a grid cell.

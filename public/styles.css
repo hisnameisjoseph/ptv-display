@@ -204,8 +204,9 @@ section[data-density="compact"] {
   --unit-size: 11px;   --unit-track: 0.4px;
   --meta-size: 13px;   --meta-line: 18px;
   --badge-size: 11px;
-  /* The rail only has to hold two digits over a three-letter unit, so it gives
-     the width back to the destination - which is what actually truncates in a
+  /* A floor, not a fixed width: sizeRail() in app.ts widens it on any card
+     showing hour-scale countdowns. Everything else keeps the narrow rail and
+     gives the width to the destination, which is what truncates first in a
      split column. */
   --rail-w: 36px;
   --row-pad-y: 10px;
@@ -410,12 +411,11 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
 @media (prefers-reduced-motion: reduce) {
   .sheet, .sheet-scrim { transition-duration: 1ms; }
 }
-
 .sheet-head {
   display: flex;
   align-items: flex-start;
   gap: var(--sp-3);
-  padding: 0 var(--sp-4);
+  padding: 0 var(--pad-right) 0 var(--pad-left);
 }
 .sheet-titles { flex: 1 1 auto; min-width: 0; }
 .sheet-eyebrow {
@@ -458,7 +458,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   min-height: 0;
   margin-top: var(--sp-4);
 }
-.sheet-search { padding: 0 var(--sp-4); }
+.sheet-search { padding: 0 var(--pad-right) 0 var(--pad-left); }
 
 .station-search {
   width: 100%;
@@ -492,7 +492,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   width: 100%;
   min-height: 60px;
   text-align: left;
-  padding: var(--sp-3) var(--sp-4);
+  padding: var(--sp-3) var(--pad-right) var(--sp-3) var(--pad-left);
   background: none;
   border: 0;
   color: var(--fg);
@@ -505,7 +505,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
 .sheet button.opt + button.opt::before {
   content: "";
   position: absolute;
-  left: calc(var(--sp-4) + 44px + var(--sp-3));
+  left: calc(var(--pad-left) + 44px + var(--sp-3));
   right: 0;
   top: 0;
   height: 1px;
@@ -516,7 +516,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
 .sheet button.opt.active .opt-name { color: var(--amber); }
 .sheet .no-match,
 .sheet .error {
-  padding: var(--sp-4);
+  padding: var(--sp-4) var(--pad-right) var(--sp-4) var(--pad-left);
   color: var(--fg-secondary);
   font-size: 15px;
 }
@@ -608,7 +608,8 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
 .rows.split .col:first-child { border-right: 1px solid var(--hairline); }
 /* Overline on a band. The band is what separates the group, so no rule is
    needed underneath it. */
-.col h3 {
+.col h3,
+.rows > h3 {
   font-family: var(--font-ui);
   font-size: var(--colh-size);
   line-height: 16px;
