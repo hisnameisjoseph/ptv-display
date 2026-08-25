@@ -689,6 +689,158 @@ function closeAddMenu(): void {
   }
 }
 
+// ---- Bottom sheet ----------------------------------------------------------
+// Every picker is a sheet that rises from the bottom of the screen rather than
+// a dropdown pinned to whatever opened it. A dropdown had to live inside its
+// card, which meant it was clipped by the card's own bounds and was only ever
+// as wide as the card allowed; a sheet is mounted on the body and answers to
+// the viewport instead.
+//
+// The sheet is deliberately outside the render cycle. render() empties #board
+// on every pass, so anything inside it is destroyed and rebuilt - which would
+// lose the caret on every keystroke and leave nothing on screen to animate out
+// on close. syncSheet() reconciles what is mounted against what the state says
+// should be open, and touches the DOM only when those disagree.
+
+/** Matches the transition in styles.css. */
+const SHEET_MS = 280;
+
+let sheetKeyMounted: string | null = null;
+let sheetNodes: { scrim: HTMLElement; sheet: HTMLElement } | null = null;
+
+/** Which sheet the current state calls for, or null for none. */
+function wantedSheetKey(): string | null {
+  if (addMenuOpen) return "add";
+  if (stationMenuCardId !== null) return "station:" + stationMenuCardId;
+  if (busMenuCardId !== null) return "bus:" + busMenuCardId;
+  return null;
+}
+
+function presentSheet(key: string): void {
+  const card = cardById(key.slice(key.indexOf(":") + 1));
+  let sheet: HTMLElement | null;
+  if (key === "add") sheet = buildAddSheet();
+  else if (key.startsWith("station:")) sheet = card ? buildStationSheet(card) : null;
+  else sheet = card ? buildBusSheet(card) : null;
+  if (!sheet) return;
+
+  const scrim = el("div", "sheet-scrim");
+  scrim.addEventListener("click", () => {
+    closeAllMenus();
+    render();
+  });
+
+  document.body.append(scrim, sheet);
+  sheetNodes = { scrim, sheet };
+
+  // Mount at the closed position for one frame so the transition has somewhere
+  // to run from; adding the class in the same frame would skip the animation.
+  requestAnimationFrame(() => {
+    scrim.classList.add("is-open");
+    sheet.classList.add("is-open");
+  });
+}
+
+function dismissSheet(animated: boolean): void {
+  const nodes = sheetNodes;
+  if (!nodes) return;
+  sheetNodes = null;
+  addListEl = null;
+  busListEl = null;
+
+  if (!animated) {
+    nodes.scrim.remove();
+    nodes.sheet.remove();
+    return;
+  }
+
+  nodes.scrim.classList.remove("is-open");
+  nodes.sheet.classList.remove("is-open");
+
+  const drop = (): void => {
+    nodes.scrim.remove();
+    nodes.sheet.remove();
+  };
+  // transitionend is the tidy path, but it never fires for a backgrounded tab,
+  // so the timer is the one that actually guarantees the node leaves. Removing
+  // an already-removed node is a no-op, so both firing is harmless.
+  nodes.sheet.addEventListener("transitionend", drop, { once: true });
+  setTimeout(drop, SHEET_MS + 80);
+}
+
+/**
+ * Reconcile the mounted sheet against the state. Called at the end of every
+ * render; does nothing at all when the two already agree, which is what keeps
+ * the search field's focus and caret while results stream in.
+ */
+function syncSheet(): void {
+  const want = wantedSheetKey();
+  if (want === sheetKeyMounted) return;
+
+  // Sliding one sheet out while another slides in reads as a glitch rather
+  // than as a transition, so a swap is instant and only the edges animate.
+  if (sheetNodes) dismissSheet(want === null);
+  sheetKeyMounted = want;
+  if (want !== null) presentSheet(want);
+}
+
+/** Sheet chrome: eyebrow, title, and a 44px close. The body is the caller's. */
+function buildSheetShell(eyebrow: string, title: string): {
+  sheet: HTMLElement;
+  body: HTMLElement;
+} {
+  const sheet = el("div", "sheet");
+  sheet.addEventListener("click", (e) => e.stopPropagation());
+
+  const head = el("div", "sheet-head");
+  const titles = el("div", "sheet-titles");
+  titles.append(el("div", "sheet-eyebrow", eyebrow), el("div", "sheet-title", title));
+
+  const close = el("button", "sheet-close", "✕");
+  close.type = "button";
+  close.setAttribute("aria-label", "Close");
+  close.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeAllMenus();
+    render();
+  });
+
+  head.append(titles, close);
+
+  const body = el("div", "sheet-body");
+  sheet.append(head, body);
+  return { sheet, body };
+}
+
+/** The search field every picker sheet opens with. */
+function buildSheetSearch(
+  placeholder: string,
+  value: string,
+  onInput: (v: string) => void,
+  onEnter: () => void,
+): { wrap: HTMLElement; input: HTMLInputElement } {
+  const wrap = el("div", "sheet-search");
+  const input = el("input", "station-search") as HTMLInputElement;
+  input.type = "text";
+  input.placeholder = placeholder;
+  input.value = value;
+  input.addEventListener("input", () => onInput(input.value));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") onEnter();
+    else if (e.key === "Escape") {
+      closeAllMenus();
+      render();
+    }
+  });
+  wrap.appendChild(input);
+  return { wrap, input };
+}
+
+/** Focus lands after the slide, so the keyboard does not race the animation. */
+function focusAfterPresent(input: HTMLInputElement): void {
+  setTimeout(() => input.focus(), SHEET_MS);
+}
+
 // ---- Card mutations --------------------------------------------------------
 // Each one writes the layout and repaints. Only the ones that change which
 // stops the board asks for trigger a refetch.
@@ -764,7 +916,6 @@ function addCard(hit: SearchHit): void {
   });
   saveLayout();
   closeAllMenus();
-  must("updated").textContent = "loading";
   refresh();
 }
 
@@ -808,7 +959,6 @@ function setCardStop(card: Card, stopId: number): void {
   // A different stop means the old route filter no longer refers to anything.
   card.routeIds = undefined;
   saveLayout();
-  must("updated").textContent = "loading";
   refresh();
 }
 
@@ -824,8 +974,28 @@ function minutesUntil(iso: string): number {
   return Math.round((new Date(iso).getTime() - Date.now()) / 60000);
 }
 
-function tickClock(): void {
-  must("clock").textContent = melbTime(new Date());
+/**
+ * A countdown, split into what sits on the rail and what sits under it.
+ *
+ * Under an hour it is the plain minute count. Past that the numeral would need
+ * a third digit - which is what pushed "279" out of its rail and up against the
+ * edge of the card - and nobody plans around 279 minutes anyway. The hour takes
+ * the numeral, the remainder becomes the unit, and the exact departure time is
+ * on the metadata line either way.
+ */
+function countdownParts(mins: number): { value: string; unit: string } {
+  if (mins < 60) return { value: String(mins), unit: "min" };
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return { value: h + "h", unit: m === 0 ? "hrs" : m + " m" };
+}
+
+/** The same countdown on one line, for a collapsed card's header. */
+function countdownShort(mins: number): string {
+  if (mins < 60) return mins + "m";
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return m === 0 ? h + "h" : h + "h" + String(m).padStart(2, "0");
 }
 
 // ---- Line colours & column classification ---------------------------------
@@ -872,6 +1042,17 @@ function subsequenceMatch(query: string, text: string): boolean {
 
 // ---- Row + shared UI pieces ------------------------------------------------
 
+/** A service is only called late once it has slipped past rounding noise. */
+const LATE_THRESHOLD_MIN = 2;
+
+/**
+ * The countdown, then the service.
+ *
+ * The numeral sits on a rail of its own on the left, larger and heavier than
+ * anything else in the row, because it is the one thing being read. Everything
+ * that qualifies it - the line, where it is going, which platform, whether the
+ * time can be trusted - follows to its right.
+ */
 function buildRow(card: Card, dep: Departure): HTMLDivElement {
   const bestIso = dep.estimatedUtc ?? dep.scheduledUtc;
   const mins = minutesUntil(bestIso);
@@ -879,6 +1060,12 @@ function buildRow(card: Card, dep: Departure): HTMLDivElement {
 
   const row = el("div", "row");
 
+  // ---- rail: numeral over its unit
+  const rail = el("div", "rail" + (mins <= hideWithin + 1 ? " now" : ""));
+  const countdown = countdownParts(mins);
+  rail.append(el("span", "mins", countdown.value), el("span", "unit", countdown.unit));
+
+  // ---- body: line badge and destination, then the qualifying metadata
   const isTrain = card.mode === "train";
   const badge = el("span", "badge " + (isTrain ? "train" : "bus"));
   badge.textContent = isTrain ? dep.route.charAt(0) : dep.route;
@@ -891,19 +1078,46 @@ function buildRow(card: Card, dep: Departure): HTMLDivElement {
   }
 
   const dest = el("div", "dest");
-  const name = el("span", "name", dep.destination);
+  dest.append(badge, el("span", "name", dep.destination));
+
   // Each fact is its own element so the stylesheet can drop the ones a small
   // card has no room for, rather than the row being rebuilt at every size.
   const meta = el("span", "meta");
-  if (dep.platform) meta.appendChild(el("span", "meta-platform", "Platform " + dep.platform));
-  meta.appendChild(el("span", "meta-live", dep.estimatedUtc ? "Live" : "Scheduled"));
-  meta.appendChild(el("span", "meta-time", melbTime(new Date(bestIso))));
-  dest.append(name, meta);
+  if (dep.platform) {
+    // Mixed weight inside one line: the number is the part being looked for.
+    const plat = el("span", "meta-platform");
+    plat.append("Platform ", el("b", undefined, dep.platform));
+    meta.appendChild(plat);
+  }
 
-  const minsEl = el("div", "mins" + (mins <= hideWithin + 1 ? " now" : ""));
-  minsEl.innerHTML = mins + "<small>min</small>";
+  const lateBy = dep.estimatedUtc
+    ? Math.round(
+        (new Date(dep.estimatedUtc).getTime() - new Date(dep.scheduledUtc).getTime()) / 60000,
+      )
+    : 0;
 
-  row.append(badge, dest, minsEl);
+  if (lateBy >= LATE_THRESHOLD_MIN) {
+    // Colour alone would say "something is off" without saying what, so the
+    // delay is spelled out and the time it replaced is struck through beside
+    // it - you can see both what was promised and what is actually happening.
+    meta.appendChild(el("span", "meta-status late", `${lateBy} min late`));
+    const time = el("span", "meta-time");
+    time.append(
+      el("s", undefined, melbTime(new Date(dep.scheduledUtc))),
+      el("span", undefined, " " + melbTime(new Date(bestIso))),
+    );
+    meta.appendChild(time);
+  } else {
+    meta.appendChild(
+      el("span", dep.estimatedUtc ? "meta-status live" : "meta-status", dep.estimatedUtc ? "Live" : "Scheduled"),
+    );
+    meta.appendChild(el("span", "meta-time", melbTime(new Date(bestIso))));
+  }
+
+  const body = el("div", "body");
+  body.append(dest, meta);
+
+  row.append(rail, body);
   return row;
 }
 
@@ -978,36 +1192,24 @@ async function loadStationPicker(): Promise<void> {
 
 // ---- Station picker menu (with search) -------------------------------------
 
-function buildStationMenu(section: HTMLElement, card: Card): void {
-  const menu = el("div", "station-menu");
-  menu.addEventListener("click", (e) => e.stopPropagation());
-
-  const search = el("input", "station-search") as HTMLInputElement;
-  search.type = "text";
-  search.placeholder = "Search stations";
-  search.value = stationQuery;
-  search.addEventListener("input", () => {
-    stationQuery = search.value;
-    refreshStationList(list, card);
-  });
-  search.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      const first = list.querySelector<HTMLButtonElement>("button.opt");
-      if (first) first.click();
-    } else if (e.key === "Escape") {
-      stationMenuCardId = null;
-      stationQuery = "";
-      render();
-    }
-  });
-
+function buildStationSheet(card: Card): HTMLElement {
+  const { sheet, body } = buildSheetShell("Change stop", "Pick a station");
   const list = el("div", "station-list");
 
-  menu.append(search, list);
-  section.appendChild(menu);
-  refreshStationList(list, card);
+  const { wrap, input } = buildSheetSearch(
+    "Search stations",
+    stationQuery,
+    (v) => {
+      stationQuery = v;
+      refreshStationList(list, card);
+    },
+    () => list.querySelector<HTMLButtonElement>("button.opt")?.click(),
+  );
 
-  setTimeout(() => search.focus(), 0);
+  body.append(wrap, list);
+  refreshStationList(list, card);
+  focusAfterPresent(input);
+  return sheet;
 }
 
 function refreshStationList(list: HTMLElement, card: Card): void {
@@ -1182,36 +1384,25 @@ function paintBusList(): void {
   }
 }
 
-function buildBusMenu(section: HTMLElement): void {
-  const menu = el("div", "station-menu");
-  menu.addEventListener("click", (e) => e.stopPropagation());
-
-  const search = el("input", "station-search") as HTMLInputElement;
-  search.type = "text";
-  search.placeholder = "Search bus stops";
-  search.value = busQuery;
-  search.addEventListener("input", () => {
-    busQuery = search.value;
-    scheduleBusSearch();
-  });
-  search.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      const first = list.querySelector<HTMLButtonElement>("button.opt");
-      if (first) first.click();
-    } else if (e.key === "Escape") {
-      closeBusMenu();
-      render();
-    }
-  });
-
+function buildBusSheet(_card: Card): HTMLElement {
+  const { sheet, body } = buildSheetShell("Change stop", "Pick a bus stop");
   const list = el("div", "station-list");
   busListEl = list;
 
-  menu.append(search, list);
-  section.appendChild(menu);
-  paintBusList();
+  const { wrap, input } = buildSheetSearch(
+    "Search bus stops",
+    busQuery,
+    (v) => {
+      busQuery = v;
+      scheduleBusSearch();
+    },
+    () => list.querySelector<HTMLButtonElement>("button.opt")?.click(),
+  );
 
-  setTimeout(() => search.focus(), 0);
+  body.append(wrap, list);
+  paintBusList();
+  focusAfterPresent(input);
+  return sheet;
 }
 
 // Close any open menu when tapping elsewhere.
@@ -1245,6 +1436,10 @@ function buildTrainGrid(
 
   const rowsWrap = el("div", "rows" + (split ? (sideBySide ? " split" : " stacked-split") : ""));
   section.appendChild(rowsWrap);
+  // A terminus has one direction, so it has no split - but without a band it is
+  // the only card on the board that opens with a bare row where every other
+  // card opens with a heading.
+  if (!split) rowsWrap.appendChild(el("h3", undefined, "All services"));
 
   let colLeft: HTMLElement | null = null;
   let colRight: HTMLElement | null = null;
@@ -1385,7 +1580,7 @@ function buildSummary(card: Card, departures: Departure[]): HTMLElement {
       }
     }
     const mins = minutesUntil(dep.estimatedUtc ?? dep.scheduledUtc);
-    chip.append(badge, el("span", "h2-mins", mins + "m"));
+    chip.append(badge, el("span", "h2-mins", countdownShort(mins)));
     times.appendChild(chip);
   }
   return times;
@@ -1412,7 +1607,11 @@ function buildTrainPortrait(
     times = buildSummary(card, summaryDepartures(split, catchable, PORTRAIT.busSummaryTimes));
   }
 
-  h2.append(times, makeCollapseButton(collapsed, () => {
+  // A shut card's header stands in for the rows it is hiding, so it carries the
+  // next service. An open card shows those rows immediately below, so repeating
+  // them here would buy nothing and cost the stop name the width it needs.
+  if (collapsed) h2.appendChild(times);
+  h2.appendChild(makeCollapseButton(collapsed, () => {
     toggleCollapsed(card);
     render();
   }));
@@ -1441,7 +1640,11 @@ function buildBusPortrait(
     times = buildSummary(card, catchable.slice(0, PORTRAIT.busSummaryTimes));
   }
 
-  h2.append(times, makeCollapseButton(collapsed, () => {
+  // A shut card's header stands in for the rows it is hiding, so it carries the
+  // next service. An open card shows those rows immediately below, so repeating
+  // them here would buy nothing and cost the stop name the width it needs.
+  if (collapsed) h2.appendChild(times);
+  h2.appendChild(makeCollapseButton(collapsed, () => {
     toggleCollapsed(card);
     render();
   }));
@@ -1527,7 +1730,7 @@ function paintAddList(): void {
     btn.type = "button";
     btn.disabled = already;
 
-    btn.appendChild(el("span", "opt-mode " + hit.mode, hit.mode === "train" ? "Train" : "Bus"));
+    btn.appendChild(el("span", "opt-mode " + hit.mode, hit.mode === "train" ? "T" : "B"));
     btn.appendChild(
       optTextBlock(hit.label, optMetaLine(hit.suburb, hit.routes.map((r) => r.label))),
     );
@@ -1541,35 +1744,25 @@ function paintAddList(): void {
   }
 }
 
-function buildAddMenu(host: HTMLElement): void {
-  const menu = el("div", "station-menu add-menu");
-  menu.addEventListener("click", (e) => e.stopPropagation());
-
-  const search = el("input", "station-search") as HTMLInputElement;
-  search.type = "text";
-  search.placeholder = "Search stations and bus stops";
-  search.value = addQuery;
-  search.addEventListener("input", () => {
-    addQuery = search.value;
-    scheduleAddSearch();
-  });
-  search.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      const first = list.querySelector<HTMLButtonElement>("button.opt:not([disabled])");
-      if (first) first.click();
-    } else if (e.key === "Escape") {
-      closeAddMenu();
-      render();
-    }
-  });
-
+function buildAddSheet(): HTMLElement {
+  const { sheet, body } = buildSheetShell("Add a stop", "Find a stop");
   const list = el("div", "station-list");
   addListEl = list;
 
-  menu.append(search, list);
-  host.appendChild(menu);
+  const { wrap, input } = buildSheetSearch(
+    "Search stations and bus stops",
+    addQuery,
+    (v) => {
+      addQuery = v;
+      scheduleAddSearch();
+    },
+    () => list.querySelector<HTMLButtonElement>("button.opt:not([disabled])")?.click(),
+  );
+
+  body.append(wrap, list);
   paintAddList();
-  setTimeout(() => search.focus(), 0);
+  focusAfterPresent(input);
+  return sheet;
 }
 
 /** The dashed tile that ends the board in edit mode. */
@@ -1597,7 +1790,6 @@ function buildAddTile(): HTMLElement {
   if (!full && cards.length >= WARN_FROM) {
     tile.appendChild(el("div", "add-note", "Cards are getting tight at this many stops."));
   }
-  if (addMenuOpen) buildAddMenu(tile);
   return tile;
 }
 
@@ -1628,13 +1820,13 @@ function buildEditControls(card: Card, index: number): HTMLElement {
     iconButton("ce-btn", "\u2191", "Move up", () => moveCard(index, -1), index === 0),
     iconButton("ce-btn", "\u2193", "Move down", () => moveCard(index, +1), index === cards.length - 1),
     iconButton(
-      "ce-btn star" + (card.primary ? " on" : ""),
+      "ce-btn" + (card.primary ? " on" : ""),
       card.primary ? "\u2605" : "\u2606",
       card.primary ? "Primary card" : "Make primary",
       () => setPrimary(card),
       !!card.primary,
     ),
-    iconButton("ce-btn", "\u2699", "Stop settings", () => {
+    iconButton("ce-btn" + (settingsCardId === card.id ? " on" : ""), "\u2699", "Stop settings", () => {
       const wasOpen = settingsCardId === card.id;
       closeAllMenus();
       if (!wasOpen) settingsCardId = card.id;
@@ -1713,12 +1905,19 @@ function buildSettingsSheet(host: HTMLElement, card: Card, stop: StopBoard): voi
 /** Small chips in the card header showing filters that are actually on, so a
  *  card never hides departures for a reason you cannot see. */
 function buildFilterChips(card: Card): HTMLElement | null {
-  const bits: string[] = [];
   const walk = effectiveWalk(card);
-  if (walk > 0) bits.push("\u25b8 " + walk + " min walk");
-  if (card.routeIds && card.routeIds.length > 0) bits.push(card.routeIds.length + " routes");
-  if (bits.length === 0) return null;
-  return el("span", "filter-chip", bits.join(" \u00b7 "));
+  const routes = card.routeIds?.length ?? 0;
+  if (walk === 0 && routes === 0) return null;
+
+  // The number carries the meaning, so it takes the heavier weight and the
+  // word beside it stays quiet - the house treatment for a value plus a unit.
+  const chip = el("span", "filter-chip");
+  if (walk > 0) chip.append(el("b", undefined, String(walk)), " min walk");
+  if (routes > 0) {
+    if (walk > 0) chip.appendChild(el("span", "chip-sep", "\u00b7"));
+    chip.append(el("b", undefined, String(routes)), " routes");
+  }
+  return chip;
 }
 
 function buildUndoToast(): HTMLElement {
@@ -1788,7 +1987,10 @@ function buildCardSection(card: Card, index: number, isGrid: boolean): HTMLEleme
     render();
   });
   h2.appendChild(nameEl);
-  const chip = buildFilterChips(card);
+  // A shut card is already spending its header on the summary times, and the
+  // chip takes the width the stop name needs. It comes back the moment the card
+  // is opened, and the summary is computed from the filtered list either way.
+  const chip = isGrid || !isCollapsed(card) ? buildFilterChips(card) : null;
   if (chip) h2.appendChild(chip);
   section.appendChild(h2);
   if (editMode) section.appendChild(buildEditControls(card, index));
@@ -1805,15 +2007,8 @@ function buildCardSection(card: Card, index: number, isGrid: boolean): HTMLEleme
     else buildBusPortrait(section, card, stop, h2);
   }
 
-  // A card clips its own content so the rows stay inside the rounded corners.
-  // A dropdown is taller than a collapsed card, so it has to be allowed out —
-  // otherwise the results are cropped to the header and the picker looks dead.
-  const menuOpen =
-    (isTrain && stationMenuCardId === card.id) || (!isTrain && busMenuCardId === card.id);
-  if (menuOpen) section.classList.add("menu-open");
-
-  if (isTrain && stationMenuCardId === card.id) buildStationMenu(section, card);
-  if (!isTrain && busMenuCardId === card.id) buildBusMenu(section);
+  // The stop pickers are bottom sheets mounted on the body, so nothing here
+  // has to make room for them or let them out past the card's own bounds.
   if (settingsCardId === card.id) buildSettingsSheet(section, card, stop);
 
   return section;
@@ -1844,6 +2039,23 @@ function wantsWideColumn(card: Card): boolean {
   if (card.mode !== "train") return false;
   const stop = boardForCard(card);
   return splitForType(stop?.stationType) !== null;
+}
+
+/**
+ * The rail is one column shared by every row in a card, so it has to be as wide
+ * as the widest countdown that card is showing. Measured after the card is in
+ * the document rather than fixed in CSS: a daytime board is all two-digit
+ * minutes and should keep the narrow rail and give the width to the
+ * destination, so only a card carrying hour-scale times pays for a wider one.
+ */
+function sizeRail(section: HTMLElement): void {
+  let widest = 0;
+  for (const rail of section.querySelectorAll<HTMLElement>(".rail")) {
+    widest = Math.max(widest, rail.scrollWidth);
+  }
+  if (widest === 0) return;
+  const floor = parseFloat(getComputedStyle(section).getPropertyValue("--rail-w")) || 0;
+  if (widest > floor) section.style.setProperty("--rail-w", Math.ceil(widest) + "px");
 }
 
 function render(): void {
@@ -1909,6 +2121,7 @@ function render(): void {
     }
 
     board.appendChild(section);
+    sizeRail(section);
     cardObserver.observe(section);
   });
 
@@ -1929,7 +2142,12 @@ function render(): void {
   pageJustTurned = false;
 
   trimOverflow(isGrid);
+
+  // Last, because the sheet lives outside #board and only wants touching when
+  // what should be open has actually changed.
+  syncSheet();
 }
+
 // ---- Edit mode toggle ------------------------------------------------------
 
 function setEditMode(on: boolean): void {
@@ -1950,17 +2168,13 @@ function boardUrl(): string {
 }
 
 async function refresh(): Promise<void> {
-  const dot = must("dot");
-  const updated = must("updated");
   try {
     const res = await fetch(boardUrl());
     if (!res.ok) throw new Error("HTTP " + res.status);
     lastPayload = (await res.json()) as BoardPayload;
-    dot.className = "";
-    updated.textContent = "Updated " + melbTime(new Date());
   } catch {
-    dot.className = "down";
-    updated.textContent = "connection lost";
+    // The previous payload stays on screen. Departure rows carry their own
+    // absolute times, so a stale board is still readable rather than blank.
   }
   render();
 }
@@ -1981,9 +2195,6 @@ async function requestWakeLock(): Promise<void> {
 // ---- Wiring / init --------------------------------------------------------
 
 function init(): void {
-  setInterval(tickClock, 1000);
-  tickClock();
-
   // Write the migrated layout back on first run, so the card list becomes the
   // stored source of truth even if the user never changes anything.
   saveLayout();
