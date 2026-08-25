@@ -689,6 +689,158 @@ function closeAddMenu(): void {
   }
 }
 
+// ---- Bottom sheet ----------------------------------------------------------
+// Every picker is a sheet that rises from the bottom of the screen rather than
+// a dropdown pinned to whatever opened it. A dropdown had to live inside its
+// card, which meant it was clipped by the card's own bounds and was only ever
+// as wide as the card allowed; a sheet is mounted on the body and answers to
+// the viewport instead.
+//
+// The sheet is deliberately outside the render cycle. render() empties #board
+// on every pass, so anything inside it is destroyed and rebuilt - which would
+// lose the caret on every keystroke and leave nothing on screen to animate out
+// on close. syncSheet() reconciles what is mounted against what the state says
+// should be open, and touches the DOM only when those disagree.
+
+/** Matches the transition in styles.css. */
+const SHEET_MS = 280;
+
+let sheetKeyMounted: string | null = null;
+let sheetNodes: { scrim: HTMLElement; sheet: HTMLElement } | null = null;
+
+/** Which sheet the current state calls for, or null for none. */
+function wantedSheetKey(): string | null {
+  if (addMenuOpen) return "add";
+  if (stationMenuCardId !== null) return "station:" + stationMenuCardId;
+  if (busMenuCardId !== null) return "bus:" + busMenuCardId;
+  return null;
+}
+
+function presentSheet(key: string): void {
+  const card = cardById(key.slice(key.indexOf(":") + 1));
+  let sheet: HTMLElement | null;
+  if (key === "add") sheet = buildAddSheet();
+  else if (key.startsWith("station:")) sheet = card ? buildStationSheet(card) : null;
+  else sheet = card ? buildBusSheet(card) : null;
+  if (!sheet) return;
+
+  const scrim = el("div", "sheet-scrim");
+  scrim.addEventListener("click", () => {
+    closeAllMenus();
+    render();
+  });
+
+  document.body.append(scrim, sheet);
+  sheetNodes = { scrim, sheet };
+
+  // Mount at the closed position for one frame so the transition has somewhere
+  // to run from; adding the class in the same frame would skip the animation.
+  requestAnimationFrame(() => {
+    scrim.classList.add("is-open");
+    sheet.classList.add("is-open");
+  });
+}
+
+function dismissSheet(animated: boolean): void {
+  const nodes = sheetNodes;
+  if (!nodes) return;
+  sheetNodes = null;
+  addListEl = null;
+  busListEl = null;
+
+  if (!animated) {
+    nodes.scrim.remove();
+    nodes.sheet.remove();
+    return;
+  }
+
+  nodes.scrim.classList.remove("is-open");
+  nodes.sheet.classList.remove("is-open");
+
+  const drop = (): void => {
+    nodes.scrim.remove();
+    nodes.sheet.remove();
+  };
+  // transitionend is the tidy path, but it never fires for a backgrounded tab,
+  // so the timer is the one that actually guarantees the node leaves. Removing
+  // an already-removed node is a no-op, so both firing is harmless.
+  nodes.sheet.addEventListener("transitionend", drop, { once: true });
+  setTimeout(drop, SHEET_MS + 80);
+}
+
+/**
+ * Reconcile the mounted sheet against the state. Called at the end of every
+ * render; does nothing at all when the two already agree, which is what keeps
+ * the search field's focus and caret while results stream in.
+ */
+function syncSheet(): void {
+  const want = wantedSheetKey();
+  if (want === sheetKeyMounted) return;
+
+  // Sliding one sheet out while another slides in reads as a glitch rather
+  // than as a transition, so a swap is instant and only the edges animate.
+  if (sheetNodes) dismissSheet(want === null);
+  sheetKeyMounted = want;
+  if (want !== null) presentSheet(want);
+}
+
+/** Sheet chrome: eyebrow, title, and a 44px close. The body is the caller's. */
+function buildSheetShell(eyebrow: string, title: string): {
+  sheet: HTMLElement;
+  body: HTMLElement;
+} {
+  const sheet = el("div", "sheet");
+  sheet.addEventListener("click", (e) => e.stopPropagation());
+
+  const head = el("div", "sheet-head");
+  const titles = el("div", "sheet-titles");
+  titles.append(el("div", "sheet-eyebrow", eyebrow), el("div", "sheet-title", title));
+
+  const close = el("button", "sheet-close", "✕");
+  close.type = "button";
+  close.setAttribute("aria-label", "Close");
+  close.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeAllMenus();
+    render();
+  });
+
+  head.append(titles, close);
+
+  const body = el("div", "sheet-body");
+  sheet.append(head, body);
+  return { sheet, body };
+}
+
+/** The search field every picker sheet opens with. */
+function buildSheetSearch(
+  placeholder: string,
+  value: string,
+  onInput: (v: string) => void,
+  onEnter: () => void,
+): { wrap: HTMLElement; input: HTMLInputElement } {
+  const wrap = el("div", "sheet-search");
+  const input = el("input", "station-search") as HTMLInputElement;
+  input.type = "text";
+  input.placeholder = placeholder;
+  input.value = value;
+  input.addEventListener("input", () => onInput(input.value));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") onEnter();
+    else if (e.key === "Escape") {
+      closeAllMenus();
+      render();
+    }
+  });
+  wrap.appendChild(input);
+  return { wrap, input };
+}
+
+/** Focus lands after the slide, so the keyboard does not race the animation. */
+function focusAfterPresent(input: HTMLInputElement): void {
+  setTimeout(() => input.focus(), SHEET_MS);
+}
+
 // ---- Card mutations --------------------------------------------------------
 // Each one writes the layout and repaints. Only the ones that change which
 // stops the board asks for trigger a refetch.
@@ -1015,36 +1167,24 @@ async function loadStationPicker(): Promise<void> {
 
 // ---- Station picker menu (with search) -------------------------------------
 
-function buildStationMenu(section: HTMLElement, card: Card): void {
-  const menu = el("div", "station-menu");
-  menu.addEventListener("click", (e) => e.stopPropagation());
-
-  const search = el("input", "station-search") as HTMLInputElement;
-  search.type = "text";
-  search.placeholder = "Search stations";
-  search.value = stationQuery;
-  search.addEventListener("input", () => {
-    stationQuery = search.value;
-    refreshStationList(list, card);
-  });
-  search.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      const first = list.querySelector<HTMLButtonElement>("button.opt");
-      if (first) first.click();
-    } else if (e.key === "Escape") {
-      stationMenuCardId = null;
-      stationQuery = "";
-      render();
-    }
-  });
-
+function buildStationSheet(card: Card): HTMLElement {
+  const { sheet, body } = buildSheetShell("Change stop", "Pick a station");
   const list = el("div", "station-list");
 
-  menu.append(search, list);
-  section.appendChild(menu);
-  refreshStationList(list, card);
+  const { wrap, input } = buildSheetSearch(
+    "Search stations",
+    stationQuery,
+    (v) => {
+      stationQuery = v;
+      refreshStationList(list, card);
+    },
+    () => list.querySelector<HTMLButtonElement>("button.opt")?.click(),
+  );
 
-  setTimeout(() => search.focus(), 0);
+  body.append(wrap, list);
+  refreshStationList(list, card);
+  focusAfterPresent(input);
+  return sheet;
 }
 
 function refreshStationList(list: HTMLElement, card: Card): void {
@@ -1219,36 +1359,25 @@ function paintBusList(): void {
   }
 }
 
-function buildBusMenu(section: HTMLElement): void {
-  const menu = el("div", "station-menu");
-  menu.addEventListener("click", (e) => e.stopPropagation());
-
-  const search = el("input", "station-search") as HTMLInputElement;
-  search.type = "text";
-  search.placeholder = "Search bus stops";
-  search.value = busQuery;
-  search.addEventListener("input", () => {
-    busQuery = search.value;
-    scheduleBusSearch();
-  });
-  search.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      const first = list.querySelector<HTMLButtonElement>("button.opt");
-      if (first) first.click();
-    } else if (e.key === "Escape") {
-      closeBusMenu();
-      render();
-    }
-  });
-
+function buildBusSheet(_card: Card): HTMLElement {
+  const { sheet, body } = buildSheetShell("Change stop", "Pick a bus stop");
   const list = el("div", "station-list");
   busListEl = list;
 
-  menu.append(search, list);
-  section.appendChild(menu);
-  paintBusList();
+  const { wrap, input } = buildSheetSearch(
+    "Search bus stops",
+    busQuery,
+    (v) => {
+      busQuery = v;
+      scheduleBusSearch();
+    },
+    () => list.querySelector<HTMLButtonElement>("button.opt")?.click(),
+  );
 
-  setTimeout(() => search.focus(), 0);
+  body.append(wrap, list);
+  paintBusList();
+  focusAfterPresent(input);
+  return sheet;
 }
 
 // Close any open menu when tapping elsewhere.
@@ -1572,7 +1701,7 @@ function paintAddList(): void {
     btn.type = "button";
     btn.disabled = already;
 
-    btn.appendChild(el("span", "opt-mode " + hit.mode, hit.mode === "train" ? "Train" : "Bus"));
+    btn.appendChild(el("span", "opt-mode " + hit.mode, hit.mode === "train" ? "T" : "B"));
     btn.appendChild(
       optTextBlock(hit.label, optMetaLine(hit.suburb, hit.routes.map((r) => r.label))),
     );
@@ -1586,35 +1715,25 @@ function paintAddList(): void {
   }
 }
 
-function buildAddMenu(host: HTMLElement): void {
-  const menu = el("div", "station-menu add-menu");
-  menu.addEventListener("click", (e) => e.stopPropagation());
-
-  const search = el("input", "station-search") as HTMLInputElement;
-  search.type = "text";
-  search.placeholder = "Search stations and bus stops";
-  search.value = addQuery;
-  search.addEventListener("input", () => {
-    addQuery = search.value;
-    scheduleAddSearch();
-  });
-  search.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      const first = list.querySelector<HTMLButtonElement>("button.opt:not([disabled])");
-      if (first) first.click();
-    } else if (e.key === "Escape") {
-      closeAddMenu();
-      render();
-    }
-  });
-
+function buildAddSheet(): HTMLElement {
+  const { sheet, body } = buildSheetShell("Add a stop", "Find a stop");
   const list = el("div", "station-list");
   addListEl = list;
 
-  menu.append(search, list);
-  host.appendChild(menu);
+  const { wrap, input } = buildSheetSearch(
+    "Search stations and bus stops",
+    addQuery,
+    (v) => {
+      addQuery = v;
+      scheduleAddSearch();
+    },
+    () => list.querySelector<HTMLButtonElement>("button.opt:not([disabled])")?.click(),
+  );
+
+  body.append(wrap, list);
   paintAddList();
-  setTimeout(() => search.focus(), 0);
+  focusAfterPresent(input);
+  return sheet;
 }
 
 /** The dashed tile that ends the board in edit mode. */
@@ -1642,7 +1761,6 @@ function buildAddTile(): HTMLElement {
   if (!full && cards.length >= WARN_FROM) {
     tile.appendChild(el("div", "add-note", "Cards are getting tight at this many stops."));
   }
-  if (addMenuOpen) buildAddMenu(tile);
   return tile;
 }
 
@@ -1673,13 +1791,13 @@ function buildEditControls(card: Card, index: number): HTMLElement {
     iconButton("ce-btn", "\u2191", "Move up", () => moveCard(index, -1), index === 0),
     iconButton("ce-btn", "\u2193", "Move down", () => moveCard(index, +1), index === cards.length - 1),
     iconButton(
-      "ce-btn star" + (card.primary ? " on" : ""),
+      "ce-btn" + (card.primary ? " on" : ""),
       card.primary ? "\u2605" : "\u2606",
       card.primary ? "Primary card" : "Make primary",
       () => setPrimary(card),
       !!card.primary,
     ),
-    iconButton("ce-btn", "\u2699", "Stop settings", () => {
+    iconButton("ce-btn" + (settingsCardId === card.id ? " on" : ""), "\u2699", "Stop settings", () => {
       const wasOpen = settingsCardId === card.id;
       closeAllMenus();
       if (!wasOpen) settingsCardId = card.id;
@@ -1857,15 +1975,8 @@ function buildCardSection(card: Card, index: number, isGrid: boolean): HTMLEleme
     else buildBusPortrait(section, card, stop, h2);
   }
 
-  // A card clips its own content so the rows stay inside the rounded corners.
-  // A dropdown is taller than a collapsed card, so it has to be allowed out —
-  // otherwise the results are cropped to the header and the picker looks dead.
-  const menuOpen =
-    (isTrain && stationMenuCardId === card.id) || (!isTrain && busMenuCardId === card.id);
-  if (menuOpen) section.classList.add("menu-open");
-
-  if (isTrain && stationMenuCardId === card.id) buildStationMenu(section, card);
-  if (!isTrain && busMenuCardId === card.id) buildBusMenu(section);
+  // The stop pickers are bottom sheets mounted on the body, so nothing here
+  // has to make room for them or let them out past the card's own bounds.
   if (settingsCardId === card.id) buildSettingsSheet(section, card, stop);
 
   return section;
@@ -1981,7 +2092,12 @@ function render(): void {
   pageJustTurned = false;
 
   trimOverflow(isGrid);
+
+  // Last, because the sheet lives outside #board and only wants touching when
+  // what should be open has actually changed.
+  syncSheet();
 }
+
 // ---- Edit mode toggle ------------------------------------------------------
 
 function setEditMode(on: boolean): void {
