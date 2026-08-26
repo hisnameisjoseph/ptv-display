@@ -315,7 +315,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   border: none;
   border-radius: var(--r-full);
   color: var(--fg-secondary);
-  font-size: 22px;
+  font-size: 44px;
   cursor: pointer;
   padding: 0;
   line-height: 1;
