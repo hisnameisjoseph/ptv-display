@@ -1484,6 +1484,7 @@ function buildTrainStacked(
 ): void {
   const rowsWrap = el("div", "rows" + (split ? (sideBySide ? " split" : " stacked-split") : ""));
   section.appendChild(rowsWrap);
+  if (!split) rowsWrap.appendChild(el("h3", undefined, "All services"));
 
   if (stop.error) {
     rowsWrap.appendChild(el("div", "error", "Data unavailable. " + stop.error));
