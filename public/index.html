@@ -5,7 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<!-- iOS tints the status bar area from this; app.ts keeps it in step with the theme. -->
+<meta name="theme-color" content="#000000" />
 <title>Melbourne Departures</title>
+<!-- Inline and synchronous, on purpose: the stylesheet below paints before
+     app.js runs, so without this a light-mode user gets a black flash on every
+     load. localStorage can throw in private browsing, hence the try. -->
+<script>
+  try {
+    if (localStorage.getItem("ptv-theme") === "light") {
+      document.documentElement.dataset.theme = "light";
+    }
+  } catch (e) {}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -14,7 +26,10 @@
 <body>
   <header>
     <h1 id="board-title">My Stops</h1>
-    <button type="button" id="edit-toggle" aria-pressed="false" aria-label="Edit board" title="Edit board">&#9998;</button>
+    <div id="header-actions">
+      <button type="button" id="theme-toggle" aria-pressed="false" aria-label="Switch to light mode" title="Switch to light mode">&#9788;</button>
+      <button type="button" id="edit-toggle" aria-pressed="false" aria-label="Edit board" title="Edit board">&#9998;</button>
+    </div>
   </header>
   <main id="board"></main>
 

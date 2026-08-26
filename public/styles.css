@@ -1,34 +1,27 @@
+/* ============================================================================
+   THEME
+
+   Three blocks below, and the split between them is the whole design:
+
+     :root                    values that are the same in both themes
+     :root, [data-theme=dark] the night board, and the default
+     [data-theme=light]       the day board
+
+   A departure looks the SAME in both themes. Line badges are filled chips
+   carrying their own background, so they are legible on any surface and never
+   move. What does move is the surfaces behind them, the greys, and the three
+   coloured INKS - because #ffb300 text on white is about 1.9:1 and cannot be
+   read. The ink tokens stay in the same hue family so the board still reads as
+   the same board; they just darken enough to survive a light background.
+   ============================================================================ */
+
 :root {
-  /* ---- Neutrals ----------------------------------------------------------
-     A four-step tint ladder, not a border palette. Separation on this board
-     comes from fill: a card is a lighter black on black, and the only line in
-     the whole system is --hairline, used as a divider and never as an outline. */
-  --bg:            #000000;  /* the board itself */
-  --bg-raised:     #121212;  /* cards, sheets */
-  --bg-sunken:     #0a0a0a;  /* inputs, inset wells */
-  --bg-band:       #181818;  /* column headers, edit bar, chips */
-  --selected:      #242424;  /* a chosen segment */
-  --hairline:      #232323;
-
-  --fg:            #ffffff;  /* every value and heading */
-  --fg-secondary:  #8b8b8b;  /* overlines, helper text */
-  --fg-tertiary:   #737373;  /* row metadata */
-  --fg-placeholder:#5a5a5a;
-
-  /* ---- Brand + status: unchanged ---------------------------------------- */
+  /* ---- Brand + status: identical in both themes -------------------------- */
   --amber: #ffb300;        /* PIDS countdown amber */
   --live: #37c978;         /* realtime green */
   --train: #2a6fb8;        /* metro-ish blue */
   --bus: #e07020;          /* bus orange */
   --late: #ea4d3c;         /* delayed */
-
-  /* Older names, kept so the two palettes cannot drift apart. */
-  --board: var(--bg);
-  --panel: var(--bg-raised);
-  --ink: var(--fg);
-  --dim: var(--fg-secondary);
-  --rule: var(--hairline);
-  --accent: #ffffff;
 
   /* ---- Radius: one ladder, nothing between the rungs -------------------- */
   --r-sm: 6px;      /* line badge */
@@ -57,6 +50,90 @@
   --pad-bottom: max(var(--pad), env(safe-area-inset-bottom));
   --pad-left: max(var(--pad), env(safe-area-inset-left));
 }
+
+/* ---- Dark: the default, and also the explicit choice ---------------------
+   A four-step tint ladder, not a border palette. Separation on this board
+   comes from fill: a card is a lighter black on black, and the only line in
+   the whole system is --hairline, used as a divider and never as an outline. */
+:root,
+:root[data-theme="dark"] {
+  --bg:            #000000;  /* the board itself */
+  --bg-raised:     #121212;  /* cards, sheets */
+  --bg-sunken:     #0a0a0a;  /* inputs, inset wells */
+  --bg-band:       #181818;  /* column headers, edit bar, chips */
+  --selected:      #242424;  /* a chosen segment */
+  --hairline:      #232323;
+
+  --fg:            #ffffff;  /* every value and heading */
+  --fg-secondary:  #8b8b8b;  /* overlines, helper text */
+  --fg-tertiary:   #737373;  /* row metadata */
+  --fg-placeholder:#5a5a5a;
+
+  /* Coloured ink. On black the brand colours are already legible, so these
+     are simply the brand colours. */
+  --ink-count: var(--amber);  /* the countdown numeral */
+  --ink-live:  var(--live);
+  --ink-late:  var(--late);
+  --on-accent: #000000;       /* text sitting on an amber fill */
+
+  --scrim:        rgba(0, 0, 0, 0.6);
+  --shadow-sheet: 0 -8px 32px rgba(0, 0, 0, 0.6);
+  --shadow-toast: 0 8px 28px rgba(0, 0, 0, 0.6);
+  --dot-off:      #4a4a4a;
+  --dots-tray:    rgba(0, 0, 0, 0.55);
+  --editing-card: #161616;    /* a card lifts slightly while being edited */
+  --badge-edge:   transparent;
+
+  /* Older names, kept so the two palettes cannot drift apart. */
+  --board: var(--bg);
+  --panel: var(--bg-raised);
+  --ink: var(--fg);
+  --dim: var(--fg-secondary);
+  --rule: var(--hairline);
+  --accent: var(--fg);
+}
+
+/* ---- Light: the same ladder, inverted -----------------------------------
+   The surfaces step DOWN from white instead of up from black, and the three
+   inks darken. Everything else - radii, spacing, type, badge colours - is
+   untouched, which is what keeps a departure looking like the same departure. */
+:root[data-theme="light"] {
+  --bg:            #ffffff;
+  --bg-raised:     #f6f6f6;
+  --bg-sunken:     #ececec;
+  --bg-band:       #efefef;
+  --selected:      #e2e2e2;
+  --hairline:      #e4e4e4;
+
+  --fg:            #000000;
+  --fg-secondary:  #6b6b6b;
+  --fg-tertiary:   #6f6f6f;
+  --fg-placeholder:#a6a6a6;
+
+  /* Same hue families, dark enough to read on a light surface. Bright amber
+     on white is ~1.9:1; this is ~5.4:1. */
+  --ink-count: #a05e00;
+  --ink-live:  #0f7a44;
+  --ink-late:  #c8341f;
+  --on-accent: #000000;
+
+  --scrim:        rgba(0, 0, 0, 0.32);
+  --shadow-sheet: 0 -8px 32px rgba(0, 0, 0, 0.18);
+  --shadow-toast: 0 8px 28px rgba(0, 0, 0, 0.18);
+  --dot-off:      #c6c6c6;
+  --dots-tray:    rgba(255, 255, 255, 0.8);
+  --editing-card: #eeeeee;
+  /* The Craigieburn badge is bright amber; on a white card it needs an edge
+     or it dissolves into the surface. */
+  --badge-edge:   rgba(0, 0, 0, 0.12);
+
+  --board: var(--bg);
+  --panel: var(--bg-raised);
+  --ink: var(--fg);
+  --dim: var(--fg-secondary);
+  --rule: var(--hairline);
+  --accent: var(--fg);
+}
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { height: 100%; }
 body {
@@ -84,7 +161,7 @@ header {
   z-index: 40;
   background: var(--board);
   margin: calc(-1 * var(--pad-top)) calc(-1 * var(--pad-right)) 0 calc(-1 * var(--pad-left));
-  padding: var(--pad-top) var(--pad-right) var(--sp-1) var(--pad-left);
+  padding: var(--pad-top) var(--pad-right) var(--sp-4) var(--pad-left);
 }
 /* title-2, deliberately a rung below the sheet's large-title: this is a board
    of stops, not a screen that needs announcing. Sized to match a destination
@@ -100,7 +177,15 @@ header {
 
 /* Edit toggle. The only control on the board outside edit mode, so it stays
    quiet until it is switched on. */
-#edit-toggle {
+#header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+/* Both header controls are the same 44px circle; only the pencil has an
+   "on" state, because the theme button changes its glyph instead. */
+#edit-toggle,
+#theme-toggle {
   width: 44px;
   height: 44px;
   flex: 0 0 44px;
@@ -114,9 +199,10 @@ header {
   place-items: center;
   cursor: pointer;
 }
-#edit-toggle:hover { color: var(--fg); }
+#edit-toggle:hover,
+#theme-toggle:hover { color: var(--fg); }
 #edit-toggle.on {
-  color: var(--bg);
+  color: var(--on-accent);
   background: var(--amber);
 }
 
@@ -141,7 +227,7 @@ header {
   gap: 6px;
   padding: 5px 8px;
   border-radius: 999px;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--dots-tray);
   z-index: 30;
 }
 .page-dot {
@@ -150,7 +236,7 @@ header {
   padding: 0;
   border: none;
   border-radius: 50%;
-  background: #4a4a4a;
+  background: var(--dot-off);
   cursor: pointer;
   transition: background 0.2s ease;
 }
@@ -338,14 +424,14 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   font-weight: 700;
   font-variant-numeric: tabular-nums;
   font-size: 17px;
-  color: var(--amber);
+  color: var(--ink-count);
   letter-spacing: 0;
   text-transform: none;
   white-space: nowrap;
 }
 /* When the times are present, they take the auto margin, so the collapse
    button shouldn't also push left. */
-.h2-times + .collapse-btn { margin-left: var(--sp-0); }
+.h2-times + .collapse-btn { margin-left: var(--sp-2); }
 .h2-times.none { color: var(--fg-secondary); font-family: var(--font-ui); font-weight: 400; font-size: 13px; }
 
 /* A summary chip mirrors the row it stands in for: the line's colour and
@@ -368,7 +454,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
 }
 .h2-times .h2-badge.train { background: var(--train); }
 .h2-times .h2-badge.bus { background: var(--bus); }
-.h2-times .h2-mins { color: var(--amber); }
+.h2-times .h2-mins { color: var(--ink-count); }
 
 /* ---- Bottom sheet ----------------------------------------------------------
    Every picker rises from the bottom of the screen. A dropdown had to live
@@ -380,7 +466,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   position: fixed;
   inset: 0;
   z-index: 90;
-  background: rgba(0, 0, 0, 0.6);
+  background: var(--scrim);
   opacity: 0;
   transition: opacity 280ms cubic-bezier(0.32, 0.72, 0, 1);
 }
@@ -400,7 +486,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   padding: var(--sp-5) 0 calc(var(--sp-4) + var(--pad-bottom));
   /* The one shadow in the design: a sheet has to read as being in front of the
      board rather than part of it, and a fill alone cannot say that. */
-  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--shadow-sheet);
   transform: translateY(100%);
   transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1);
 }
@@ -446,7 +532,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   border-radius: var(--r-full);
   background: var(--bg-band);
   color: var(--fg);
-  font-size: 22px;
+  font-size: 15px;
   line-height: 1;
   cursor: pointer;
 }
@@ -513,7 +599,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
 }
 .sheet button.opt:hover,
 .sheet button.opt.highlight { background: var(--bg-band); }
-.sheet button.opt.active .opt-name { color: var(--amber); }
+.sheet button.opt.active .opt-name { color: var(--ink-count); }
 .sheet .no-match,
 .sheet .error {
   padding: var(--sp-4) var(--pad-right) var(--sp-4) var(--pad-left);
@@ -584,7 +670,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   font-size: var(--mins-size);
   line-height: var(--mins-line);
   letter-spacing: -0.02em;
-  color: var(--amber);
+  color: var(--ink-count);
 }
 /* The unit is an overline, and the numeral is always larger and heavier. */
 .rail .unit {
@@ -595,7 +681,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   text-transform: uppercase;
   color: var(--fg-secondary);
 }
-.rail.now .mins { color: var(--live); }
+.rail.now .mins { color: var(--ink-live); }
 
 .body { min-width: 0; }
 
@@ -635,6 +721,9 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   min-width: 20px;
   text-align: center;
   flex: 0 0 auto;
+  /* Transparent in dark mode. In light mode a bright badge - Craigieburn
+     amber, Upfield yellow - would otherwise dissolve into a white card. */
+  box-shadow: inset 0 0 0 1px var(--badge-edge);
 }
 .badge.train { background: var(--train); }
 .badge.bus { background: var(--bus); }
@@ -661,16 +750,10 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   font-size: var(--meta-size);
   line-height: var(--meta-line);
   font-weight: 400;
+  display: flex;
+  align-items: baseline;
   min-width: 0;
   margin-top: 1px;
-  /* Was display:flex. A flex item's default min-width is its min-content size,
-     and a nowrap span's min-content is its whole text - so the children could
-     never shrink and the line overflowed the card instead of clipping. As a
-     block it ellipsizes, the same way the destination above it does. */
-  display: block;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 /* Facts are separate elements so density can drop one without rebuilding the
    row; the separator rides on each item after the first. */
@@ -688,8 +771,8 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
-.body .meta .meta-status.live { color: var(--live); font-weight: 600; }
-.body .meta .meta-status.late { color: var(--late); font-weight: 600; }
+.body .meta .meta-status.live { color: var(--ink-live); font-weight: 600; }
+.body .meta .meta-status.late { color: var(--ink-late); font-weight: 600; }
 .body .meta .meta-time s { color: var(--fg-secondary); text-decoration-thickness: 1px; }
 
 .empty, .error {
@@ -697,16 +780,16 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   color: var(--dim);
   font-size: clamp(13px, 3.6vw, 15px);
 }
-.error { color: #d98380; }
+.error { color: var(--ink-late); }
 
 /* ---- Wall-display layout: trains left, buses stacked right ----
    Triggered by landscape orientation on a wide-enough viewport.
    This is the "ambient board" mode (spare phone in landscape, or a
    monitor). Portrait and narrow windows use the stacked decision view. */
 @media (orientation: landscape) and (min-width: 700px) {
-  body { gap: var(--sp-1); }
+  body { gap: var(--sp-2); }
   #board-title { font-size: 17px; line-height: 22px; }
-  header { padding-bottom: var(--sp-0); }
+  header { padding-bottom: var(--sp-2); }
   /* The template is written by the layout engine in app.ts, derived from the
      number of cards and the space available. No fixed areas: the board has to
      hold anything from one card to eight. */
@@ -729,7 +812,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
    the board carries no chrome at all, which is what makes it safe to mount on
    a wall. */
 
-#board.editing section { background: #161616; }
+#board.editing section { background: var(--editing-card); }
 
 /* The bar keeps the height it always had. The room for a bigger glyph and a
    bigger hit target comes from the buttons filling it edge to edge instead of
@@ -759,9 +842,9 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
 }
 .ce-btn:hover:not(:disabled) { background: var(--selected); }
 .ce-btn:disabled { color: var(--fg-placeholder); cursor: default; }
-.ce-btn.on { color: var(--amber); }
+.ce-btn.on { color: var(--ink-count); }
 
-.ce-btn.danger { margin-left: auto; color: var(--late); }
+.ce-btn.danger { margin-left: auto; color: var(--ink-late); }
 .ce-btn.danger:disabled { color: var(--fg-placeholder); }
 
 /* Filter chip: a card must never hide departures for a reason you cannot see. */
@@ -855,7 +938,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
 }
 .chip:hover { color: var(--fg); background: var(--selected); }
 .chip.on {
-  color: var(--bg);
+  color: var(--on-accent);
   background: var(--amber);
 }
 .set-row .chip { margin-left: auto; }
@@ -906,7 +989,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   padding: 0 var(--sp-3);
 }
 .add-btn:disabled { color: var(--fg-placeholder); cursor: default; }
-.add-plus { color: var(--amber); font-size: 22px; line-height: 1; }
+.add-plus { color: var(--ink-count); font-size: 22px; line-height: 1; }
 .add-btn:disabled .add-plus { color: inherit; }
 .add-note {
   font-family: var(--font-ui);
@@ -950,7 +1033,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   border: 0;
   border-radius: var(--r-full);
   padding: 0 var(--sp-5);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--shadow-toast);
   font-family: var(--font-ui);
   font-size: 15px;
   color: var(--fg);
@@ -959,7 +1042,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
 .toast-undo {
   background: none;
   border: none;
-  color: var(--amber);
+  color: var(--ink-count);
   font: inherit;
   font-weight: 700;
   cursor: pointer;

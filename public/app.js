@@ -253,6 +253,32 @@ function loadStopId(key, fallback) {
     const n = parseInt(loadSetting(key, String(fallback)), 10);
     return Number.isFinite(n) && n > 0 ? n : fallback;
 }
+const THEME_KEY = "ptv-theme";
+let theme = loadSetting(THEME_KEY, "dark") === "light" ? "light" : "dark";
+/**
+ * Theming is entirely a CSS concern - one attribute on <html> swaps the token
+ * block - so this never needs a render(). The button shows where it will take
+ * you rather than where you are, which is the convention people expect.
+ */
+function applyTheme() {
+    document.documentElement.dataset.theme = theme;
+    const btn = must("theme-toggle");
+    const goingLight = theme === "dark";
+    btn.textContent = goingLight ? "\u2600" : "\u263D"; // sun : crescent moon
+    btn.title = goingLight ? "Switch to light mode" : "Switch to dark mode";
+    btn.setAttribute("aria-label", btn.title);
+    btn.setAttribute("aria-pressed", String(theme === "light"));
+    // iOS paints the area behind the status bar from this, so it has to move
+    // with the board or a light board keeps a black strip along the top.
+    document
+        .querySelector('meta[name="theme-color"]')
+        ?.setAttribute("content", theme === "light" ? "#ffffff" : "#000000");
+}
+function setTheme(next) {
+    theme = next;
+    saveSetting(THEME_KEY, next);
+    applyTheme();
+}
 // ---- Layout: load, migrate, save -------------------------------------------
 function newCardId() {
     try {
@@ -1228,8 +1254,6 @@ function buildTrainGrid(section, card, stop, split, sideBySide) {
 function buildTrainStacked(section, card, stop, split, sideBySide) {
     const rowsWrap = el("div", "rows" + (split ? (sideBySide ? " split" : " stacked-split") : ""));
     section.appendChild(rowsWrap);
-    if (!split)
-        rowsWrap.appendChild(el("h3", undefined, "All services"));
     if (stop.error) {
         rowsWrap.appendChild(el("div", "error", "Data unavailable. " + stop.error));
         return;
@@ -1863,6 +1887,14 @@ function init() {
     // Write the migrated layout back on first run, so the card list becomes the
     // stored source of truth even if the user never changes anything.
     saveLayout();
+    // The inline script in index.html has already set the attribute to avoid a
+    // flash; this brings the button's glyph and labels into line with it.
+    applyTheme();
+    must("theme-toggle").addEventListener("click", (e) => {
+        // Without this the document-level handler would also close any open menu.
+        e.stopPropagation();
+        setTheme(theme === "dark" ? "light" : "dark");
+    });
     must("edit-toggle").addEventListener("click", (e) => {
         e.stopPropagation();
         setEditMode(!editMode);
