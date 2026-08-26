@@ -84,7 +84,7 @@ header {
   z-index: 40;
   background: var(--board);
   margin: calc(-1 * var(--pad-top)) calc(-1 * var(--pad-right)) 0 calc(-1 * var(--pad-left));
-  padding: var(--pad-top) var(--pad-right) var(--sp-4) var(--pad-left);
+  padding: var(--pad-top) var(--pad-right) var(--sp-1) var(--pad-left);
 }
 /* title-2, deliberately a rung below the sheet's large-title: this is a board
    of stops, not a screen that needs announcing. Sized to match a destination
@@ -315,7 +315,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   border: none;
   border-radius: var(--r-full);
   color: var(--fg-secondary);
-  font-size: 15px;
+  font-size: 22px;
   cursor: pointer;
   padding: 0;
   line-height: 1;
@@ -345,7 +345,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
 }
 /* When the times are present, they take the auto margin, so the collapse
    button shouldn't also push left. */
-.h2-times + .collapse-btn { margin-left: var(--sp-2); }
+.h2-times + .collapse-btn { margin-left: var(--sp-0); }
 .h2-times.none { color: var(--fg-secondary); font-family: var(--font-ui); font-weight: 400; font-size: 13px; }
 
 /* A summary chip mirrors the row it stands in for: the line's colour and
@@ -446,7 +446,7 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   border-radius: var(--r-full);
   background: var(--bg-band);
   color: var(--fg);
-  font-size: 15px;
+  font-size: 22px;
   line-height: 1;
   cursor: pointer;
 }
@@ -661,10 +661,16 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
   font-size: var(--meta-size);
   line-height: var(--meta-line);
   font-weight: 400;
-  display: flex;
-  align-items: baseline;
   min-width: 0;
   margin-top: 1px;
+  /* Was display:flex. A flex item's default min-width is its min-content size,
+     and a nowrap span's min-content is its whole text - so the children could
+     never shrink and the line overflowed the card instead of clipping. As a
+     block it ellipsizes, the same way the destination above it does. */
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* Facts are separate elements so density can drop one without rebuilding the
    row; the separator rides on each item after the first. */
@@ -698,9 +704,9 @@ h2 .caret { color: var(--fg-secondary); font-size: 12px; }
    This is the "ambient board" mode (spare phone in landscape, or a
    monitor). Portrait and narrow windows use the stacked decision view. */
 @media (orientation: landscape) and (min-width: 700px) {
-  body { gap: var(--sp-2); }
+  body { gap: var(--sp-1); }
   #board-title { font-size: 17px; line-height: 22px; }
-  header { padding-bottom: var(--sp-2); }
+  header { padding-bottom: var(--sp-0); }
   /* The template is written by the layout engine in app.ts, derived from the
      number of cards and the space available. No fixed areas: the board has to
      hold anything from one card to eight. */
