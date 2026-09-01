@@ -30,7 +30,9 @@ struct BoardView: View {
         .environment(\.palette, palette)
         .preferredColorScheme(store.theme.colorScheme)
         .task { store.start() }
-        .onChange(of: scenePhase) { phase in
+        // Two-parameter form: the single-parameter onChange was deprecated in
+        // iOS 17, which is this app's deployment target.
+        .onChange(of: scenePhase) { _, phase in
             // A board nobody is looking at should not poll every 45 seconds.
             switch phase {
             case .active:     store.start(); Task { await store.refresh() }

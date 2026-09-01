@@ -36,7 +36,24 @@ than the five minutes this takes:
 4. Delete the generated `ContentView.swift` and the generated `App.swift`
 5. Drag `ios/PTVBoard/` into the project — **Create groups**, *not* folder
    references, and tick "Copy items if needed" only if you want a detached copy
-6. Set the deployment target to **iOS 16.1** (ActivityKit needs it in phase D)
+6. Set the deployment target to **iOS 17.0**
+
+   Not 16.1. `DepartureRow` concatenates `Text` values and calls
+   `.foregroundStyle()` on them; that overload returns a concatenable `Text`
+   only from iOS 17. Live Activities need 16.1+, so 17.0 still clears them.
+
+### Typechecking without a project
+
+The whole tree can be typechecked against the iOS SDK before a project exists,
+which is far faster than reading Xcode's errors one file at a time:
+
+```bash
+xcrun --sdk iphoneos swiftc -typecheck \
+  -target arm64-apple-ios17.0 \
+  $(find ios/PTVBoard -name '*.swift')
+```
+
+Phase A passes this clean.
 
 ### Before first run
 
