@@ -50,29 +50,47 @@ which is far faster than reading Xcode's errors one file at a time:
 ```bash
 xcrun --sdk iphoneos swiftc -typecheck \
   -target arm64-apple-ios17.0 \
-  -swift-version 5 \
+  -swift-version 6 \
   $(find ios/PTVBoard -name '*.swift')
 ```
 
-**Pin `-swift-version`, or the check is weaker than the build.** Without it
-swiftc defaults to Swift 5 while Xcode 16 defaults new projects to Swift 6, so
-the command comes back clean on code Xcode refuses.
+**Pin `-swift-version` to whatever the project is set to, or the check is
+weaker than the build.** Without the flag swiftc defaults to Swift 5, while
+Xcode 16 defaults new projects to Swift 6 - so an unpinned command comes back
+clean on code Xcode refuses. That gap is not theoretical; it is exactly how the
+missing `import Combine` below reached a first build.
 
-## Swift language mode
+## Swift 6 and the Combine import
 
-The project must be set to **Swift 5** (project → Build Settings → *Swift
-Language Version*).
+If Xcode reports
 
-`BoardStore` is a `@MainActor` class conforming to `ObservableObject`. Under
-Swift 6 the synthesised `objectWillChange` inherits the class's actor
-isolation, but the protocol requires it to be `nonisolated`, so the conformance
-fails and every `BoardStore()` is an error.
+> Type 'BoardStore' does not conform to protocol 'ObservableObject'
 
-The real fix is the Observation framework - `@Observable` instead of
-`ObservableObject`, `@State` instead of `@StateObject`, `@Environment(BoardStore.self)`
-instead of `@EnvironmentObject`. It needs iOS 17, which is already the target.
-That migration is queued for phase B, after which the project can go back to
-Swift 6.
+read the errors *above* it first. The real ones sit on each `@Published`:
+
+> Initializer 'init(wrappedValue:)' is not available due to missing import of
+> defining module 'Combine'
+
+The conformance failure is a cascade of those, not a cause. `@Published` and
+`ObservableObject` are declared in **Combine**, not SwiftUI. Swift 6 enables
+member import visibility (SE-0444), which stops a member being usable just
+because some other import re-exports its module - the module that *declares*
+it has to be imported by name. So `BoardStore.swift` imports Combine
+explicitly.
+
+Only `BoardStore.swift` needs it. Everything else uses `@StateObject` and
+`@EnvironmentObject`, which are SwiftUI's own property wrappers.
+
+The import is correct under Swift 5 as well, so the project does not have to
+change language mode for it. If other Swift 6 errors do surface - the strict
+concurrency checks are the likely source - setting *Swift Language Version* to
+Swift 5 (project → Build Settings) is a working fallback rather than a fix.
+
+The durable answer is the Observation framework: `@Observable` instead of
+`ObservableObject`, `@State` instead of `@StateObject`,
+`@Environment(BoardStore.self)` instead of `@EnvironmentObject`, and no Combine
+at all. It needs iOS 17, which is already the target. That migration is queued
+for phase B.
 
 ### Before first run
 

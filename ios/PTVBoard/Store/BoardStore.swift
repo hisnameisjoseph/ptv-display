@@ -9,6 +9,12 @@
 
 import Foundation
 import SwiftUI
+// @Published and ObservableObject are Combine's, not SwiftUI's. Swift 6 turns on
+// member import visibility (SE-0444): a member is only usable if the module that
+// DECLARES it is imported by name, never through a re-export. Without this line
+// every @Published below fails with "init(wrappedValue:) is not available", and
+// the ObservableObject conformance fails as a cascade of those.
+import Combine
 
 @MainActor
 final class BoardStore: ObservableObject {
