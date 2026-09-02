@@ -50,10 +50,29 @@ which is far faster than reading Xcode's errors one file at a time:
 ```bash
 xcrun --sdk iphoneos swiftc -typecheck \
   -target arm64-apple-ios17.0 \
+  -swift-version 5 \
   $(find ios/PTVBoard -name '*.swift')
 ```
 
-Phase A passes this clean.
+**Pin `-swift-version`, or the check is weaker than the build.** Without it
+swiftc defaults to Swift 5 while Xcode 16 defaults new projects to Swift 6, so
+the command comes back clean on code Xcode refuses.
+
+## Swift language mode
+
+The project must be set to **Swift 5** (project → Build Settings → *Swift
+Language Version*).
+
+`BoardStore` is a `@MainActor` class conforming to `ObservableObject`. Under
+Swift 6 the synthesised `objectWillChange` inherits the class's actor
+isolation, but the protocol requires it to be `nonisolated`, so the conformance
+fails and every `BoardStore()` is an error.
+
+The real fix is the Observation framework - `@Observable` instead of
+`ObservableObject`, `@State` instead of `@StateObject`, `@Environment(BoardStore.self)`
+instead of `@EnvironmentObject`. It needs iOS 17, which is already the target.
+That migration is queued for phase B, after which the project can go back to
+Swift 6.
 
 ### Before first run
 
