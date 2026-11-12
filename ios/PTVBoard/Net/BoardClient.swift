@@ -33,7 +33,7 @@ actor BoardClient {
     /// NOTE: fill this in before first run - it is deliberately left as a
     /// placeholder rather than guessed, because pointing the app at the wrong
     /// host fails in a way that looks like a bug in the app.
-    static let defaultBaseURL = URL(string: "https://REPLACE-ME.workers.dev")!
+    static let defaultBaseURL = URL(string: "https://ptv-display.josephforanu.workers.dev")!
 
     private let baseURL: URL
     private let session: URLSession
